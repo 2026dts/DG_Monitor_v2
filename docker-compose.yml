@@ -1,0 +1,83 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: dg-postgres
+    environment:
+      POSTGRES_DB:       dg_monitor
+      POSTGRES_USER:     dg_user
+      POSTGRES_PASSWORD: dg_password
+    volumes:
+      - dg_postgres_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    ports:
+      - "127.0.0.1:5433:5432"    # 5433 to avoid clash with UPS postgres on 5432
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dg_user -d dg_monitor"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dg-monitor:
+    build: .
+    container_name: dg-monitor
+    ports:
+      - "5001:5001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Modbus / USR
+      USR_IP:         10.10.10.77
+      USR_PORT:       8899
+      SLAVE_ID:       1
+      POLL_INTERVAL:  2
+      TCP_TIMEOUT:    20
+      DEVICE_NAME:    "DG Status"
+
+      # Database
+      DB_HOST:        postgres
+      DB_PORT:        5432
+      DB_NAME:        dg_monitor
+      DB_USER:        dg_user
+      DB_PASSWORD:    dg_password
+
+      # Fuel cost KPIs
+      FUEL_COST_PER_LITRE:   "96.0"    # ₹ per litre — update to current price
+      FUEL_CONSUMPTION_LPH:  "8.5"     # litres per hour at rated load
+
+      # Alarm thresholds
+      ALARM_FUEL_LOW_PCT:    "20.0"
+      ALARM_FREQ_MIN_HZ:     "47.0"
+      ALARM_FREQ_MAX_HZ:     "53.0"
+      ALARM_BATT_LOW_V:      "11.8"
+      ALARM_COOLANT_HIGH_F:  "220.0"
+      ALARM_OIL_LOW_PSI:     "20.0"
+
+      # ThingsBoard (selective — genset_state + fuel_level only)
+      TB_HOST:         10.10.10.52
+      TB_PORT:         1883
+      TB_ACCESS_TOKEN: yiTdu947lff9A6r755Kt
+      TB_USE_TLS:      "False"
+
+      # SMTP alerts
+      SMTP_HOST:        smtp.yourdomain.com
+      SMTP_PORT:        "587"
+      SMTP_USER:        alerts@yourdomain.com
+      SMTP_PASSWORD:    ""
+      SMTP_USE_TLS:     "true"
+      SMTP_FROM:        "DG Monitor <alerts@yourdomain.com>"
+      ALERT_RECIPIENTS: "engineer@yourdomain.com"
+
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  dg_postgres_data:
+    driver: local
