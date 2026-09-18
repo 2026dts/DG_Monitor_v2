@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS dg_alarms (
     severity        TEXT NOT NULL DEFAULT 'critical',
     opened_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     cleared_at      TIMESTAMPTZ,
+    read_at         TIMESTAMPTZ,
     notified_at     TIMESTAMPTZ,
     notify_count    INTEGER DEFAULT 0,
     extra           JSONB

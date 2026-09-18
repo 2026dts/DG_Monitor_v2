@@ -10,7 +10,8 @@ Routes:
 """
 
 from datetime import datetime
-from flask import Flask, jsonify, request
+import os
+from flask import Flask, jsonify, request, send_from_directory
 import state
 import db_store
 from config import USR_IP, USR_PORT, SLAVE_ID
@@ -40,7 +41,7 @@ def api_monthly():
 
 @app.route("/api/alarms")
 def api_alarms():
-    alarms = db_store.get_open_alarms()
+    alarms = db_store.get_recent_alarms(days=7)
     for a in alarms:
         for k, v in a.items():
             if isinstance(v, datetime):
@@ -61,6 +62,21 @@ def api_alarms_ack():
             return jsonify({"status": "ok", "message": f"Alarm {alarm_id} acknowledged"})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 400
+    return jsonify({"status": "error", "message": "Invalid request"}), 400
+
+@app.route("/api/alarms/read", methods=["POST"])
+def api_alarms_read():
+    data = request.get_json(silent=True) or {}
+    if data.get("all"):
+        db_store.mark_all_alarms_read()
+        return jsonify({"status": "ok"})
+    alarm_id = data.get("id")
+    if alarm_id:
+        try:
+            db_store.mark_alarm_read(int(alarm_id))
+            return jsonify({"status": "ok"})
+        except (TypeError, ValueError):
+            pass
     return jsonify({"status": "error", "message": "Invalid request"}), 400
 
 @app.route("/api/tb/email-sent", methods=["GET", "POST"])
@@ -88,6 +104,11 @@ def api_tb_email_sent():
 def api_documents():
     return jsonify(db_store.get_documents())
 
+@app.route("/static/docs/<path:filename>")
+def serve_doc(filename):
+    docs_dir = os.path.dirname(os.path.abspath(__file__))
+    return send_from_directory(docs_dir, filename)
+
 @app.route("/")
 def dashboard():
     return DASHBOARD_HTML
@@ -100,7 +121,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Diesel Generator · Command Center</title>
+<title>Diesel Generator</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
 <style>
@@ -368,6 +389,23 @@ body {
 }
 .aci-ack-btn:active {
   transform: translateY(0);
+}
+.aci-read-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 1px solid rgba(14, 166, 82, 0.35);
+  border-radius: 50%;
+  background: var(--green-dim);
+  color: var(--green);
+  cursor: pointer;
+}
+.aci-read-btn:hover {
+  background: var(--green);
+  color: #fff;
 }
 
 .aci-email-info {
@@ -1209,6 +1247,190 @@ body {
   border-top: 1px solid var(--border);
   margin-top: 20px;
 }
+
+/* ── Tab Navigation Bar ──────────────────────────────────── */
+.tab-nav {
+  background: var(--surface);
+  border-bottom: 2px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0 28px;
+  position: sticky;
+  top: 67px;
+  z-index: 90;
+  overflow-x: auto;
+  box-shadow: 0 2px 8px rgba(15,23,42,.04);
+}
+.tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 13px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text2);
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+  transition: all .2s;
+  white-space: nowrap;
+  letter-spacing: .1px;
+}
+.tab-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+.tab-btn:hover { color: var(--blue); background: rgba(37,99,235,.04); }
+.tab-btn.active {
+  color: var(--blue);
+  border-bottom-color: var(--blue);
+  background: rgba(37,99,235,.06);
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+.main { max-width: 1200px; margin: 0 auto; padding: 24px 28px; display: flex; flex-direction: column; gap: 22px; }
+
+/* ── Range Indicator Bar ─────────────────────────────────── */
+.range-bar-wrap {
+  margin-top: 6px;
+  position: relative;
+}
+.range-bar-track {
+  height: 7px;
+  border-radius: 4px;
+  width: 100%;
+  display: flex;
+  overflow: hidden;
+  background: var(--card2);
+  border: 1px solid var(--border);
+}
+.range-zone { height: 100%; }
+.range-zone.low  { background: #ef4444; }
+.range-zone.warn { background: #f59e0b; }
+.range-zone.ok   { background: #22c55e; }
+.range-zone.high { background: #f59e0b; }
+.range-zone.crit { background: #ef4444; }
+.range-marker {
+  position: absolute;
+  top: -3px;
+  width: 3px;
+  height: 13px;
+  background: #0f172a;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  transition: left .5s ease;
+  box-shadow: 0 1px 4px rgba(0,0,0,.3);
+}
+.range-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--text3);
+  margin-top: 2px;
+  font-weight: 600;
+}
+
+/* ── Notification Read/Unread ────────────────────────────── */
+.alarm-card-item.unread {
+  border-left-color: var(--blue) !important;
+  border-color: rgba(37,99,235,.25) !important;
+  background: linear-gradient(180deg, #fff 0%, #f0f6ff 100%) !important;
+}
+.alarm-card-item.info.unread {
+  border-left-color: var(--blue) !important;
+}
+.unread-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--blue);
+  flex-shrink: 0;
+  box-shadow: 0 0 6px rgba(37,99,235,.6);
+}
+.aci-name.unread-txt { color: var(--blue); }
+.notif-tabs {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border);
+  padding: 0 16px; background: var(--card);
+}
+.notif-tab {
+  font-size: 12px; font-weight: 700; color: var(--text3);
+  padding: 8px 14px; border: none; background: none; cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; transition: all .15s;
+}
+.notif-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+
+/* ── Maintenance Tab ─────────────────────────────────────── */
+.maint-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px 26px;
+  box-shadow: var(--shadow);
+}
+.maint-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 12px;
+}
+.maint-table th {
+  background: var(--card);
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  padding: 9px 14px;
+  text-align: left;
+  border-bottom: 2px solid var(--border);
+}
+.maint-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-weight: 500;
+  vertical-align: middle;
+}
+.maint-table tr:last-child td { border-bottom: none; }
+.maint-table tr:hover td { background: var(--card); }
+.maint-due-ok  { color: var(--green); font-weight: 700; }
+.maint-due-warn { color: var(--amber); font-weight: 700; }
+.maint-due-over { color: var(--red); font-weight: 700; }
+.interval-badge {
+  display: inline-block; padding: 2px 9px;
+  border-radius: 12px; font-size: 10px; font-weight: 800;
+  background: var(--blue-dim); color: var(--blue);
+}
+.contact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+.contact-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.contact-avatar {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: var(--blue-dim);
+  color: var(--blue);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 900; flex-shrink: 0;
+}
+.contact-name { font-size: 14px; font-weight: 800; color: var(--text); }
+.contact-role { font-size: 11px; color: var(--text3); margin-top: 1px; }
+.contact-phone {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 13px; font-weight: 700; color: var(--green);
+  margin-top: 4px;
+}
 </style>
 </head>
 <body>
@@ -1218,22 +1440,17 @@ body {
   <div class="hdr-left">
     <div class="unit-badge">● DG-1</div>
     <div>
-      <div class="page-title">Diesel Generator Command Center</div>
-      <div class="page-sub" id="hdrSub">10.10.10.77:8899 · Cummins PS0600 / PCC1301</div>
+      <div class="page-title">Diesel Generator</div>
     </div>
   </div>
   <div class="hdr-right">
-    
-    <!-- Notification Bell Icon in Top Right -->
-    <button id="notifBellBtn" class="notif-btn" onclick="toggleNotifPanel()" title="Active System Alarms">
+    <button id="notifBellBtn" class="notif-btn" onclick="toggleNotifPanel()" title="Notifications">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
         <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
       </svg>
       <span id="notifBadge" class="notif-badge">0</span>
     </button>
-
-    <!-- Sound Toggle Button -->
     <button id="soundToggleBtn" onclick="toggleAudio()" class="sound-btn" title="Toggle audio alarms">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 9a4 4 0 0 1 0 6"/></svg>
       <span id="soundTxt">Sound: ON</span>
@@ -1242,21 +1459,27 @@ body {
   </div>
 </header>
 
-<!-- Notification Panel Dropdown Modal -->
+<!-- Notification Panel (Email-Style Read/Unread) -->
 <div id="notifOverlay" class="notif-overlay" onclick="closeNotifPanel(event)">
   <div class="notif-modal" onclick="event.stopPropagation()">
     <div class="notif-header">
       <div class="notif-title">
         <span class="ic-chip c-red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 2 20h20z"/><path d="M12 10v4"/><circle cx="12" cy="17" r=".9" fill="currentColor" stroke="none"/></svg></span>
-        Active Alarms & Alerts (<span id="notifModalCount">0</span>)
+        Alarms &amp; Alerts (<span id="notifModalCount">0</span>)
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
-        <button class="notif-ack-all-btn" onclick="ackAllAlarms(event)" title="Acknowledge and silence all alarms">
+        <button class="notif-ack-all-btn" onclick="markAllRead(event)" title="Mark all as read">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
-          <span>Ack All</span>
+          <span>Mark All Read</span>
         </button>
         <button class="notif-close-btn" onclick="closeNotifPanel(event)">✕</button>
       </div>
+    </div>
+    <!-- Notification Filter Tabs -->
+    <div class="notif-tabs">
+      <button class="notif-tab active" id="ntabAll" onclick="switchNotifTab('all',this)">All</button>
+      <button class="notif-tab" id="ntabUnread" onclick="switchNotifTab('unread',this)">Unread <span id="ntabUnreadCount" style="display:none;background:var(--blue);color:#fff;font-size:9px;padding:1px 5px;border-radius:8px;margin-left:3px;"></span></button>
+      <button class="notif-tab" id="ntabRead" onclick="switchNotifTab('read',this)">Read</button>
     </div>
     <div class="notif-body" id="notifModalBody">
       <!-- Injected via JavaScript -->
@@ -1264,99 +1487,92 @@ body {
   </div>
 </div>
 
-<!-- Centered Main Content -->
+<!-- Tab Navigation Bar -->
+<nav class="tab-nav">
+  <button class="tab-btn active" onclick="switchTab('overview',this)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+    Overview
+  </button>
+  <button class="tab-btn" onclick="switchTab('engine',this)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+    Engine Health
+  </button>
+  <button class="tab-btn" onclick="switchTab('electrical',this)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+    Electrical
+  </button>
+  <button class="tab-btn" onclick="switchTab('analytics',this)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+    Analytics
+  </button>
+  <button class="tab-btn" onclick="switchTab('documents',this)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+    Documents
+  </button>
+  <button class="tab-btn" onclick="switchTab('maintenance',this)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+    Maintenance
+  </button>
+</nav>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB 1: OVERVIEW                                        -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="tab-overview" class="tab-panel active">
 <main class="main">
 
   <!-- 1. FEATURED DYNAMIC INTERACTIVE WIDGETS -->
   <div class="dynamic-grid">
-
-    <!-- A. Dynamic Fuel Level Tank Widget (Screenshot 2 Match) -->
+    <!-- A. Fuel Level -->
     <div class="dyn-card" id="cardFuelTank">
       <div>
         <div class="dyn-hdr">
           <div class="dyn-title-wrap">
-            <span class="ic-chip c-dark">
-              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>
-            </span>
-            <div>
-              <div class="dyn-title">Fuel level</div>
-              <div class="dyn-sub">Primary Reserve Tank</div>
-            </div>
+            <span class="ic-chip c-dark"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg></span>
+            <div><div class="dyn-title">Fuel Level</div><div class="dyn-sub">Primary Reserve Tank</div></div>
           </div>
           <span class="fuel-meta-badge" id="fuelStatusBadge">Normal</span>
         </div>
-
-        <!-- Cylindrical Tank SVG Graphic -->
         <div class="fuel-tank-container">
           <div class="tank-svg-wrap">
             <svg class="fuel-tank-svg" viewBox="0 0 200 90" fill="none" xmlns="http://www.w3.org/2000/svg">
               <defs>
-                <clipPath id="tankInnerClip">
-                  <rect x="15" y="16" width="170" height="66" rx="33" />
-                </clipPath>
-                <linearGradient id="liquidGradNormal" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#708cfa" />
-                  <stop offset="100%" stop-color="#4c6ef5" />
-                </linearGradient>
-                <linearGradient id="liquidGradAmber" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#fcc419" />
-                  <stop offset="100%" stop-color="#f59f00" />
-                </linearGradient>
-                <linearGradient id="liquidGradRed" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#ff8787" />
-                  <stop offset="100%" stop-color="#fa5252" />
-                </linearGradient>
+                <clipPath id="tankInnerClip"><rect x="15" y="16" width="170" height="66" rx="33" /></clipPath>
+                <linearGradient id="liquidGradNormal" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#708cfa" /><stop offset="100%" stop-color="#4c6ef5" /></linearGradient>
+                <linearGradient id="liquidGradAmber" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#fcc419" /><stop offset="100%" stop-color="#f59f00" /></linearGradient>
+                <linearGradient id="liquidGradRed" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff8787" /><stop offset="100%" stop-color="#fa5252" /></linearGradient>
               </defs>
-
-              <!-- Top Filler Neck & Cap -->
               <rect x="91" y="2" width="18" height="6" rx="2" fill="#203a72" />
               <path d="M94 8h12v9H94z" fill="none" stroke="#203a72" stroke-width="2" />
-
-              <!-- Outer Tank Outline -->
               <rect x="15" y="16" width="170" height="66" rx="33" fill="#f8fafd" stroke="#203a72" stroke-width="2.5" />
-
-              <!-- Inner Perspective Dished Head Arc -->
               <path d="M 68 16 A 25 33 0 0 1 68 82" fill="none" stroke="#203a72" stroke-width="1.6" stroke-dasharray="3 3" opacity="0.6" />
               <path d="M 68 16 A 25 33 0 0 0 68 82" fill="none" stroke="#203a72" stroke-width="1.8" />
-
-              <!-- Dynamic Liquid Fill inside Clip Area -->
               <g clip-path="url(#tankInnerClip)">
                 <rect id="svgLiquidRect" x="0" y="49" width="200" height="60" fill="url(#liquidGradNormal)" style="transition: all 0.8s ease;" />
                 <line id="svgLiquidSurface" x1="0" y1="49" x2="200" y2="49" stroke="#ffffff" stroke-width="1.5" opacity="0.6" style="transition: all 0.8s ease;" />
               </g>
             </svg>
-
-            <!-- Floating Center Value Badge -->
             <div class="tank-pill-badge" id="tankPillBadge">50 %</div>
           </div>
         </div>
       </div>
-
       <div class="fuel-meta-row">
-        <span>Min Threshold: <strong>20%</strong></span>
+        <span>Low Alarm: <strong style="color:var(--red)">30%</strong></span>
         <span id="fuelEstimatedLiters">— Litres</span>
       </div>
     </div>
 
-    <!-- B. Dynamic Control Switch Position Widget (Screenshot 2 Match) -->
+    <!-- B. Control Switch -->
     <div class="dyn-card" id="cardControlSwitch">
       <div>
         <div class="dyn-hdr">
           <div class="dyn-title-wrap">
-            <span class="ic-chip c-slate">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="2" y="6" width="20" height="12" rx="6"/><circle cx="8" cy="12" r="3" fill="currentColor"/></svg>
-            </span>
-            <div>
-              <div class="dyn-title">Control Switch</div>
-              <div class="dyn-sub" id="switchLastUpdate">Last update just now</div>
-            </div>
+            <span class="ic-chip c-slate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="2" y="6" width="20" height="12" rx="6"/><circle cx="8" cy="12" r="3" fill="currentColor"/></svg></span>
+            <div><div class="dyn-title">Control Switch</div><div class="dyn-sub" id="switchLastUpdate">Last update just now</div></div>
           </div>
         </div>
-
         <div class="switch-state-display">
           <div class="switch-big-val" id="switchBigVal">Auto</div>
-          
-          <!-- Visual 3-Way Mode Switcher Indicator -->
           <div class="switch-toggle-track">
             <div class="switch-pos-btn" id="swBtnOff">Off</div>
             <div class="switch-pos-btn active sw-auto" id="swBtnAuto">Auto</div>
@@ -1364,47 +1580,33 @@ body {
           </div>
         </div>
       </div>
-
       <div class="fuel-meta-row">
         <span>Operating Mode</span>
         <span id="switchSubStatus" style="font-weight:700;color:var(--green)">Auto Standby</span>
       </div>
     </div>
 
-    <!-- C. Dynamic Radial Tachometer Gauge for Engine RPM -->
+    <!-- C. Engine RPM Gauge -->
     <div class="dyn-card" id="cardEngineState">
       <div>
         <div class="dyn-hdr">
           <div class="dyn-title-wrap">
-            <span class="ic-chip c-cyan">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            </span>
-            <div>
-              <div class="dyn-title">Engine Speed</div>
-              <div class="dyn-sub">Radial Tachometer</div>
-            </div>
+            <span class="ic-chip c-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
+            <div><div class="dyn-title">Engine Speed</div><div class="dyn-sub">Radial Tachometer</div></div>
           </div>
         </div>
-
         <div class="radial-gauge-container">
           <div class="radial-svg-wrap">
             <svg class="radial-gauge-svg" viewBox="0 0 200 110">
-              <!-- Outer Base Semi-Circle Track (Center 100, 92, Radius 70) -->
               <path d="M 30 92 A 70 70 0 0 1 170 92" fill="none" stroke="#e2e8f0" stroke-width="8" stroke-linecap="round" />
-
-              <!-- Scale Zones -->
               <path d="M 30 92 A 70 70 0 0 1 111 23" fill="none" stroke="#0891b2" stroke-width="8" stroke-linecap="round" />
               <path d="M 111 23 A 70 70 0 0 1 160 55" fill="none" stroke="#0ea652" stroke-width="8" />
               <path d="M 160 55 A 70 70 0 0 1 170 92" fill="none" stroke="#e11d3c" stroke-width="8" stroke-linecap="round" />
-
-              <!-- Scale Labels -->
               <text x="20" y="96" font-size="9" font-weight="700" fill="#94a3b8" text-anchor="middle">0</text>
               <text x="44" y="52" font-size="9" font-weight="700" fill="#94a3b8" text-anchor="middle">500</text>
               <text x="100" y="16" font-size="9" font-weight="700" fill="#94a3b8" text-anchor="middle">1k</text>
               <text x="150" y="50" font-size="9" font-weight="800" fill="#0ea652" text-anchor="middle">1.5k</text>
               <text x="180" y="96" font-size="9" font-weight="800" fill="#e11d3c" text-anchor="middle">2k</text>
-
-              <!-- Needle Rotator (Pivot at 100, 92) -->
               <g class="needle-rotator" id="radialNeedle" style="transform: rotate(0deg);">
                 <polygon points="100,89 100,95 44,92.5 44,91.5" fill="#e11d3c" />
                 <circle cx="100" cy="92" r="7" fill="#0f172a" />
@@ -1412,645 +1614,383 @@ body {
               </g>
             </svg>
           </div>
-
           <div class="rpm-readout-wrap">
             <div class="rpm-big-val"><span id="radialRpmNum">0</span> <span class="rpm-unit">RPM</span></div>
             <div class="engine-status-pill" id="dynGensetPill">● STOPPED</div>
           </div>
         </div>
       </div>
-
-
       <div class="fuel-meta-row">
-        <span>Rated Frequency</span>
-        <span><strong>1500 RPM</strong> (50.0 Hz)</span>
+        <span>Rated: <strong>1500 RPM</strong> (50 Hz)</span>
+        <span style="font-size:10px;color:var(--green);font-weight:700">🟢 Healthy: 1400–1600</span>
       </div>
     </div>
 
-    <!-- D. Dynamic Power Output & Frequency Widget -->
+    <!-- D. Output Load -->
     <div class="dyn-card" id="cardPowerKpi">
       <div>
         <div class="dyn-hdr">
           <div class="dyn-title-wrap">
-            <span class="ic-chip c-blue">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-            </span>
-            <div>
-              <div class="dyn-title">Output Load</div>
-              <div class="dyn-sub">Active Power & Hz</div>
-            </div>
+            <span class="ic-chip c-blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>
+            <div><div class="dyn-title">Output Load</div><div class="dyn-sub">Active Power &amp; Hz</div></div>
           </div>
         </div>
-
         <div class="power-kpi-wrap">
           <div>
             <div class="power-kpi-item">
               <span class="p-label">Active Power</span>
               <span class="p-val" id="dynKwVal">0.0 kW</span>
             </div>
-            <div class="power-bar-wrap">
-              <div class="power-bar-fill" id="dynKwBar"></div>
-            </div>
+            <div class="power-bar-wrap"><div class="power-bar-fill" id="dynKwBar"></div></div>
           </div>
-
           <div>
             <div class="power-kpi-item">
               <span class="p-label">Frequency</span>
               <span class="p-val" style="color:var(--green);font-size:18px" id="dynFreqVal">0.00 Hz</span>
             </div>
+            <!-- Range Bar: Frequency -->
+            <div class="range-bar-wrap" style="margin-top:4px;">
+              <div class="range-bar-track">
+                <div class="range-zone low"  style="width:10%"></div>
+                <div class="range-zone warn" style="width:10%"></div>
+                <div class="range-zone ok"   style="width:20%"></div>
+                <div class="range-zone warn" style="width:10%"></div>
+                <div class="range-zone crit" style="width:50%"></div>
+              </div>
+              <div class="range-marker" id="freqRangeMarker" style="left:0%"></div>
+              <div class="range-labels"><span>45Hz</span><span style="color:#22c55e">49</span><span style="color:#22c55e">51</span><span style="color:#ef4444">55Hz</span></div>
+            </div>
           </div>
         </div>
       </div>
-
       <div class="fuel-meta-row">
         <span>Apparent Power</span>
         <span id="dynKvaVal"><strong>0.0 kVA</strong></span>
       </div>
     </div>
-
   </div>
 
-  <!-- 2. ENGINE HEALTH & DIAGNOSTICS - DYNAMIC VISUAL WIDGETS -->
-  <div>
-    <div class="sec-lbl">
-      <span class="ic-chip c-orange"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
-      Engine Health & Diagnostics
-    </div>
-    <div class="dynamic-grid" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));">
-      
-      <!-- 1. BATTERY VOLTAGE WIDGET (Image 1 Match: 3D Glossy Battery Tube) -->
-      <div class="dyn-card" id="sc-batt">
-        <div class="dyn-hdr">
-          <div class="dyn-title-wrap">
-            <span class="ic-chip c-green">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="16" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/></svg>
-            </span>
-            <div>
-              <div class="dyn-title">Battery Voltage</div>
-              <div class="dyn-sub">12V DC Starter Supply</div>
-            </div>
-          </div>
-          <span class="fuel-meta-badge" id="battStatusBadge" style="background:var(--green-dim);color:var(--green)">Healthy</span>
-        </div>
-
-        <div class="batt-widget-container">
-          <div class="batt-cell-svg-wrap">
-            <svg viewBox="0 0 200 80" fill="none" style="width:100%;height:100%;">
-              <defs>
-                <clipPath id="battBodyClip">
-                  <rect x="16" y="14" width="156" height="52" rx="12" />
-                </clipPath>
-                <!-- Battery 3D Tube Gradient -->
-                <linearGradient id="battTubeGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#475569" />
-                  <stop offset="15%" stop-color="#1e293b" />
-                  <stop offset="50%" stop-color="#0f172a" />
-                  <stop offset="85%" stop-color="#1e293b" />
-                  <stop offset="100%" stop-color="#020617" />
-                </linearGradient>
-                <!-- Liquid Fill Gradient Green -->
-                <linearGradient id="battLiqGreen" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#4ade80" />
-                  <stop offset="30%" stop-color="#22c55e" />
-                  <stop offset="70%" stop-color="#16a34a" />
-                  <stop offset="100%" stop-color="#14532d" />
-                </linearGradient>
-                <!-- Liquid Fill Gradient Red -->
-                <linearGradient id="battLiqRed" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#f87171" />
-                  <stop offset="30%" stop-color="#ef4444" />
-                  <stop offset="70%" stop-color="#dc2626" />
-                  <stop offset="100%" stop-color="#7f1d1d" />
-                </linearGradient>
-                <!-- Metallic Cap Gradient -->
-                <linearGradient id="metalCapGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#cbd5e1" />
-                  <stop offset="40%" stop-color="#f8fafc" />
-                  <stop offset="70%" stop-color="#94a3b8" />
-                  <stop offset="100%" stop-color="#475569" />
-                </linearGradient>
-              </defs>
-
-              <!-- Positive Terminal Knob on Right -->
-              <rect x="174" y="27" width="10" height="26" rx="4" fill="url(#metalCapGrad)" stroke="#475569" stroke-width="1.5" />
-
-              <!-- Main Battery Body Casing (Metallic Rims) -->
-              <rect x="12" y="11" width="164" height="58" rx="14" fill="url(#metalCapGrad)" stroke="#334155" stroke-width="1.5" />
-              <!-- Inner Black Tube -->
-              <rect x="16" y="14" width="156" height="52" rx="12" fill="url(#battTubeGrad)" />
-
-              <!-- Dynamic Liquid Charge Fill -->
-              <g clip-path="url(#battBodyClip)">
-                <rect id="svgBattFill" x="16" y="14" width="130" height="52" fill="url(#battLiqGreen)" style="transition: width 0.8s ease, fill 0.5s ease;" />
-                <!-- Glossy Glass Reflection Sheen -->
-                <path d="M 16 14 L 172 14 L 172 32 Q 94 38 16 32 Z" fill="#ffffff" opacity="0.25" />
-                <rect x="16" y="58" width="156" height="8" fill="#ffffff" opacity="0.1" />
-              </g>
-
-              <!-- Centered Bold Percentage Text -->
-              <text x="94" y="46" font-size="18" font-weight="900" fill="#ffffff" text-anchor="middle" id="svgBattPctText" style="text-shadow: 0 2px 4px rgba(0,0,0,0.8);">85%</text>
-            </svg>
-          </div>
-          <div style="font-size: 18px; font-weight: 900; color: var(--text); margin-top: -4px;" id="svgBattVoltsText">12.6 V</div>
-        </div>
-
-        <div class="fuel-meta-row">
-          <span>Min Threshold: <strong>11.8 V</strong></span>
-          <span id="sv-batt-pct">Charge: <strong>85 %</strong></span>
-        </div>
-      </div>
-
-      <!-- 2. COOLANT TEMP WIDGET (Image 2 Match: Realistic Circular Dial Thermometer) -->
-      <div class="dyn-card" id="sc-temp">
-        <div class="dyn-hdr">
-          <div class="dyn-title-wrap">
-            <span class="ic-chip c-orange">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
-            </span>
-            <div>
-              <div class="dyn-title">Coolant Temp</div>
-              <div class="dyn-sub">Circular Dial Thermometer</div>
-            </div>
-          </div>
-          <span class="fuel-meta-badge" id="tempStatusBadge" style="background:var(--green-dim);color:var(--green)">Normal</span>
-        </div>
-
-        <div class="coolant-dial-container">
-          <div class="coolant-dial-svg-wrap">
-            <svg viewBox="0 0 200 200" style="width:100%;height:100%;">
-              <defs>
-                <radialGradient id="dialPlateGrad" cx="50%" cy="50%" r="50%">
-                  <stop offset="0%" stop-color="#ffffff" />
-                  <stop offset="85%" stop-color="#f8fafc" />
-                  <stop offset="100%" stop-color="#e2e8f0" />
-                </radialGradient>
-                <filter id="dialShadow" x="-10%" y="-10%" width="120%" height="120%">
-                  <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.1" />
-                </filter>
-              </defs>
-
-              <!-- Outer Dial Bezel Rim -->
-              <circle cx="100" cy="100" r="92" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="3" filter="url(#dialShadow)" />
-              <circle cx="100" cy="100" r="86" fill="url(#dialPlateGrad)" stroke="#e2e8f0" stroke-width="1.5" />
-
-              <!-- Outer Color-Graded Arc (Green -> Yellow -> Orange -> Red) -->
-              <path d="M 59.0 141.0 A 58 58 0 0 1 59.0 59.0" fill="none" stroke="#22c55e" stroke-width="8" stroke-linecap="round" />
-              <path d="M 59.0 59.0 A 58 58 0 0 1 100.0 42.0" fill="none" stroke="#eab308" stroke-width="8" />
-              <path d="M 100.0 42.0 A 58 58 0 0 1 141.0 59.0" fill="none" stroke="#f97316" stroke-width="8" />
-              <path d="M 141.0 59.0 A 58 58 0 0 1 141.0 141.0" fill="none" stroke="#ef4444" stroke-width="8" stroke-linecap="round" />
-
-              <!-- Inner Scale Arc -->
-              <path d="M 68.2 131.8 A 45 45 0 0 1 100.0 55.0" fill="none" stroke="#22c55e" stroke-width="1.5" />
-              <path d="M 100.0 55.0 A 45 45 0 0 1 131.8 131.8" fill="none" stroke="#ef4444" stroke-width="1.5" />
-
-              <!-- Radial Ticks & Outer Numbers (Reference Image 2 Match) -->
-              <line x1="55.5" y1="144.5" x2="50.5" y2="149.5" stroke="#94a3b8" stroke-width="1.5" />
-              <text x="41.3" y="161.9" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">-60</text>
-              <line x1="39.1" y1="116.3" x2="32.4" y2="118.1" stroke="#94a3b8" stroke-width="1.5" />
-              <text x="19.8" y="124.7" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">-40</text>
-              <line x1="39.1" y1="83.7" x2="32.4" y2="81.9" stroke="#94a3b8" stroke-width="1.5" />
-              <text x="19.8" y="81.7" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">-20</text>
-              <line x1="55.5" y1="55.5" x2="50.5" y2="50.5" stroke="#94a3b8" stroke-width="1.5" />
-              <text x="41.3" y="44.5" font-size="8" font-weight="800" fill="#15803d" text-anchor="middle">0</text>
-              <line x1="83.7" y1="39.1" x2="81.9" y2="32.4" stroke="#94a3b8" stroke-width="1.5" />
-              <text x="78.5" y="23.0" font-size="8" font-weight="600" fill="#b45309" text-anchor="middle">20</text>
-              <line x1="116.3" y1="39.1" x2="118.1" y2="32.4" stroke="#94a3b8" stroke-width="1.5" />
-              <text x="121.5" y="23.0" font-size="8" font-weight="600" fill="#b45309" text-anchor="middle">40</text>
-              <line x1="144.5" y1="55.5" x2="149.5" y2="50.5" stroke="#94a3b8" stroke-width="1.5" />
-              <text x="158.7" y="44.5" font-size="8" font-weight="800" fill="#c2410c" text-anchor="middle">60</text>
-              <line x1="160.9" y1="83.7" x2="167.6" y2="81.9" stroke="#94a3b8" stroke-width="1.5" />
-              <text x="180.2" y="81.7" font-size="8" font-weight="600" fill="#c2410c" text-anchor="middle">80</text>
-              <line x1="160.9" y1="116.3" x2="167.6" y2="118.1" stroke="#94a3b8" stroke-width="1.5" />
-              <text x="180.2" y="124.7" font-size="8" font-weight="600" fill="#b91c1c" text-anchor="middle">100</text>
-              <line x1="144.5" y1="144.5" x2="149.5" y2="149.5" stroke="#94a3b8" stroke-width="1.5" />
-              <text x="158.7" y="161.9" font-size="8" font-weight="800" fill="#b91c1c" text-anchor="middle">120</text>
-
-              <!-- Unit Label -->
-              <text x="100" y="152" font-size="13" font-weight="800" fill="#0f172a" text-anchor="middle">°F</text>
-
-              <!-- Pointer Needle (Pivot cx=100, cy=100) -->
-              <g id="tempNeedleGroup" style="transform-origin: 100px 100px; transform: rotate(-135deg); transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);">
-                <polygon points="100,34 103,100 97,100" fill="#0f172a" />
-                <circle cx="100" cy="100" r="9" fill="#0f172a" stroke="#475569" stroke-width="1.5" />
-                <circle cx="100" cy="100" r="3.5" fill="#ffffff" />
-              </g>
-            </svg>
-          </div>
-          <div style="font-size: 18px; font-weight: 900; color: var(--text); margin-top: -4px;" id="sv-temp-num">0.0 °F</div>
-        </div>
-
-        <div class="fuel-meta-row">
-          <span>Max Safe Limit</span>
-          <span><strong>220 °F</strong></span>
-        </div>
-      </div>
-
-      <!-- 3. OIL PRESSURE WIDGET (Image 3 Match: Neon Glowing Automotive Oil Can) -->
-      <div class="dyn-card" id="sc-oil">
-        <div class="dyn-hdr">
-          <div class="dyn-title-wrap">
-            <span class="ic-chip c-purple">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>
-            </span>
-            <div>
-              <div class="dyn-title">Oil Pressure</div>
-              <div class="dyn-sub">Engine Lube Circuit</div>
-            </div>
-          </div>
-          <span class="fuel-meta-badge" id="oilStatusBadge" style="background:var(--green-dim);color:var(--green)">Optimal</span>
-        </div>
-
-        <div class="oil-widget-container">
-          <div class="oil-can-svg-wrap">
-            <svg viewBox="0 0 200 115" fill="none" style="width:100%;height:100%;">
-              <defs>
-                <filter id="oilCanNeonGlow" x="-20%" y="-20%" width="140%" height="140%">
-                  <feGaussianBlur stdDeviation="3.5" result="glow1" />
-                  <feGaussianBlur stdDeviation="7" result="glow2" />
-                  <feMerge>
-                    <feMergeNode in="glow2" />
-                    <feMergeNode in="glow1" />
-                    <feMergeNode in="SourceGraphic" />
-                  </feMerge>
-                </filter>
-                <linearGradient id="oilTileGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#1f0a0a" />
-                  <stop offset="100%" stop-color="#0a0202" />
-                </linearGradient>
-              </defs>
-
-              <!-- Dark Neon Display Tile -->
-              <rect x="8" y="6" width="184" height="103" rx="14" fill="url(#oilTileGrad)" stroke="#451111" stroke-width="1.5" />
-
-              <!-- Glowing Automotive Engine Oil Can Vector Path -->
-              <g id="svgOilCanGroup" filter="url(#oilCanNeonGlow)">
-                <!-- Handle on Left -->
-                <path d="M 38 48 C 24 48 20 58 20 66 C 20 76 28 84 40 84 L 50 84 L 50 75 L 40 75 C 33 75 29 71 29 66 C 29 61 33 56 40 56 L 54 56 L 54 48 Z" fill="#ffd100" stroke="#ff9100" stroke-width="1"/>
-                <!-- Top Filler Cap -->
-                <path d="M 76 32 L 106 32 L 106 38 L 95 38 L 95 46 L 87 46 L 87 38 L 76 38 Z" fill="#ffd100" stroke="#ff9100" stroke-width="1"/>
-                <!-- Main Can Body & Spout (Sharp Double-line glow) -->
-                <path d="M 50 48 L 118 48 L 148 62 L 175 50 L 178 55 L 152 69 L 126 84 L 50 84 Z" fill="rgba(255, 209, 0, 0.15)" stroke="#ffd100" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"/>
-                <!-- Dripping Oil Droplet -->
-                <path d="M 176 68 C 176 68 168 80 168 86 C 168 91 172 95 176 95 C 180 95 184 91 184 86 C 184 80 176 68 176 68 Z" fill="#ffd100" stroke="#ff9100" stroke-width="1.2"/>
-              </g>
-
-              <!-- Sub-caption inside tile -->
-              <text x="100" y="102" font-size="9" font-weight="900" fill="#fb8500" text-anchor="middle" letter-spacing="1.2" id="svgOilTileText">ENGINE OIL PRESSURE</text>
-            </svg>
-          </div>
-          <div style="font-size: 20px; font-weight: 900; color: #d97706; font-variant-numeric: tabular-nums; margin-top: -2px;" id="sv-oil-num">0.0 psi</div>
-        </div>
-
-        <div class="fuel-meta-row">
-          <span>Min Operating Pressure</span>
-          <span><strong>20.0 psi</strong></span>
-        </div>
-      </div>
-
-      <!-- 4. ACTIVE FAULT ALERT WIDGET (Image 4 Match: Cyberpunk Tech Alert HUD) -->
-      <div class="dyn-card" id="sc-fault">
-        <div class="dyn-hdr">
-          <div class="dyn-title-wrap">
-            <span class="ic-chip c-red">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-            </span>
-            <div>
-              <div class="dyn-title">Active Fault</div>
-              <div class="dyn-sub">Diagnostics & Alarms</div>
-            </div>
-          </div>
-          <span class="fuel-meta-badge" id="faultStatusBadge" style="background:var(--green-dim);color:var(--green)">System Safe</span>
-        </div>
-
-        <div class="fault-widget-container">
-          <div class="fault-hud-box" id="faultHudBox">
-            <div class="fault-hud-grid"></div>
-            <div class="fault-hud-corner tl"></div>
-            <div class="fault-hud-corner tr"></div>
-            <div class="fault-hud-corner bl"></div>
-            <div class="fault-hud-corner br"></div>
-
-            <!-- Glowing Triangle Alert Icon -->
-            <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-              <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" id="svgFaultIcon" style="filter: drop-shadow(0 0 8px rgba(34, 197, 94, 0.7)); transition: all 0.4s ease;">
-                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
-                <line x1="12" y1="9" x2="12" y2="13" stroke-width="2.5"/>
-                <circle cx="12" cy="17" r="1.2" fill="currentColor" stroke="none"/>
-              </svg>
-            </div>
-
-            <div style="display:flex;flex-direction:column;z-index:2;">
-              <span style="font-size:10px;font-weight:800;color:#94a3b8;letter-spacing:1.2px;text-transform:uppercase;">DIAGNOSTIC STATUS</span>
-              <span style="font-size:18px;font-weight:900;color:#22c55e;line-height:1.2;margin-top:2px;" id="sv-fault-code">NORMAL (#0)</span>
-              <span style="font-size:11px;font-weight:700;color:#64748b;margin-top:1px;" id="sv-fault-sub">Severity: None</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="fuel-meta-row">
-          <span>Fault Severity</span>
-          <span id="ss-fault-sev" style="font-weight:700;color:var(--green)">None</span>
-        </div>
-      </div>
-
-    </div>
-  </div>
-
-
-  <!-- 3. STATUS FLAGS / SYSTEM HEALTH MATRIX -->
+  <!-- 2. SYSTEM HEALTH MATRIX -->
   <div>
     <div class="sec-lbl">
       <span class="ic-chip c-indigo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/></svg></span>
-      System Health & Diagnostics Matrix
+      System Health &amp; Diagnostics Matrix
     </div>
     <div class="flags-grid" id="flagsGrid">
-      
-      <!-- Genset State -->
-      <div class="status-card-pill ok-st" id="fl-state">
-        <div class="scp-icon-wrap c-green">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="3"/></svg>
-        </div>
-        <div class="scp-body">
-          <span class="scp-title">Genset</span>
-          <div class="scp-status-wrap">
-            <span class="fdot ok"></span>
-            <span class="scp-val" id="fl-state-v">STOPPED</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Control Switch -->
-      <div class="status-card-pill ok-st" id="fl-switch">
-        <div class="scp-icon-wrap c-cyan">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="12" rx="6"/><circle cx="8" cy="12" r="3"/></svg>
-        </div>
-        <div class="scp-body">
-          <span class="scp-title">Control</span>
-          <div class="scp-status-wrap">
-            <span class="fdot ok"></span>
-            <span class="scp-val" id="fl-switch-v">AUTO</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Fuel Status -->
-      <div class="status-card-pill ok-st" id="fl-fuel">
-        <div class="scp-icon-wrap c-amber">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 22V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v17M3 11h12M15 8h2a2 2 0 0 1 2 2v6a2 2 0 0 0 2 2h0a2 2 0 0 0 2-2V9.5a1.5 1.5 0 0 0-3-1"/></svg>
-        </div>
-        <div class="scp-body">
-          <span class="scp-title">Fuel Level</span>
-          <div class="scp-status-wrap">
-            <span class="fdot ok"></span>
-            <span class="scp-val" id="fl-fuel-v">NORMAL</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Battery Status -->
-      <div class="status-card-pill ok-st" id="fl-batt">
-        <div class="scp-icon-wrap c-green">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="16" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/></svg>
-        </div>
-        <div class="scp-body">
-          <span class="scp-title">Battery</span>
-          <div class="scp-status-wrap">
-            <span class="fdot ok"></span>
-            <span class="scp-val" id="fl-batt-v">HEALTHY</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Oil Pressure -->
-      <div class="status-card-pill ok-st" id="fl-oil">
-        <div class="scp-icon-wrap c-orange">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 14c1.66 0 3-1.34 3-3 0-2-3-6-3-6s-3 4-3 6c0 1.66 1.34 3 3 3z"/><path d="M5 6h9v12H5z"/><path d="M2 10h3M2 14h3"/></svg>
-        </div>
-        <div class="scp-body">
-          <span class="scp-title">Oil Press</span>
-          <div class="scp-status-wrap">
-            <span class="fdot ok"></span>
-            <span class="scp-val" id="fl-oil-v">OPTIMAL</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Coolant Temp -->
-      <div class="status-card-pill ok-st" id="fl-temp">
-        <div class="scp-icon-wrap c-blue">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
-        </div>
-        <div class="scp-body">
-          <span class="scp-title">Coolant</span>
-          <div class="scp-status-wrap">
-            <span class="fdot ok"></span>
-            <span class="scp-val" id="fl-temp-v">NORMAL</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Frequency Band -->
-      <div class="status-card-pill ok-st" id="fl-freq">
-        <div class="scp-icon-wrap c-purple">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12h3l3-7 4 14 4-10 2 5 2-2h4"/></svg>
-        </div>
-        <div class="scp-body">
-          <span class="scp-title">Frequency</span>
-          <div class="scp-status-wrap">
-            <span class="fdot ok"></span>
-            <span class="scp-val" id="fl-freq-v">IN BAND</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Modbus Link -->
-      <div class="status-card-pill ok-st" id="fl-link">
-        <div class="scp-icon-wrap c-teal">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
-        </div>
-        <div class="scp-body">
-          <span class="scp-title">Modbus Link</span>
-          <div class="scp-status-wrap">
-            <span class="fdot ok"></span>
-            <span class="scp-val" id="fl-link-v">ONLINE</span>
-          </div>
-        </div>
-      </div>
-
+      <div class="status-card-pill ok-st" id="fl-state"><div class="scp-icon-wrap c-green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="3"/></svg></div><div class="scp-body"><span class="scp-title">Genset</span><div class="scp-status-wrap"><span class="fdot ok"></span><span class="scp-val" id="fl-state-v">STOPPED</span></div></div></div>
+      <div class="status-card-pill ok-st" id="fl-switch"><div class="scp-icon-wrap c-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="12" rx="6"/><circle cx="8" cy="12" r="3"/></svg></div><div class="scp-body"><span class="scp-title">Control</span><div class="scp-status-wrap"><span class="fdot ok"></span><span class="scp-val" id="fl-switch-v">AUTO</span></div></div></div>
+      <div class="status-card-pill ok-st" id="fl-fuel"><div class="scp-icon-wrap c-amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 22V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v17M3 11h12M15 8h2a2 2 0 0 1 2 2v6a2 2 0 0 0 2 2h0a2 2 0 0 0 2-2V9.5a1.5 1.5 0 0 0-3-1"/></svg></div><div class="scp-body"><span class="scp-title">Fuel Level</span><div class="scp-status-wrap"><span class="fdot ok"></span><span class="scp-val" id="fl-fuel-v">NORMAL</span></div></div></div>
+      <div class="status-card-pill ok-st" id="fl-batt"><div class="scp-icon-wrap c-green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="16" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/></svg></div><div class="scp-body"><span class="scp-title">Battery</span><div class="scp-status-wrap"><span class="fdot ok"></span><span class="scp-val" id="fl-batt-v">HEALTHY</span></div></div></div>
+      <div class="status-card-pill ok-st" id="fl-oil"><div class="scp-icon-wrap c-orange"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 14c1.66 0 3-1.34 3-3 0-2-3-6-3-6s-3 4-3 6c0 1.66 1.34 3 3 3z"/><path d="M5 6h9v12H5z"/><path d="M2 10h3M2 14h3"/></svg></div><div class="scp-body"><span class="scp-title">Oil Press</span><div class="scp-status-wrap"><span class="fdot ok"></span><span class="scp-val" id="fl-oil-v">OPTIMAL</span></div></div></div>
+      <div class="status-card-pill ok-st" id="fl-temp"><div class="scp-icon-wrap c-blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg></div><div class="scp-body"><span class="scp-title">Coolant</span><div class="scp-status-wrap"><span class="fdot ok"></span><span class="scp-val" id="fl-temp-v">NORMAL</span></div></div></div>
+      <div class="status-card-pill ok-st" id="fl-freq"><div class="scp-icon-wrap c-purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12h3l3-7 4 14 4-10 2 5 2-2h4"/></svg></div><div class="scp-body"><span class="scp-title">Frequency</span><div class="scp-status-wrap"><span class="fdot ok"></span><span class="scp-val" id="fl-freq-v">IN BAND</span></div></div></div>
+      <div class="status-card-pill ok-st" id="fl-link"><div class="scp-icon-wrap c-teal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg></div><div class="scp-body"><span class="scp-title">Modbus Link</span><div class="scp-status-wrap"><span class="fdot ok"></span><span class="scp-val" id="fl-link-v">ONLINE</span></div></div></div>
     </div>
   </div>
 
-  <!-- 4. THREE-PHASE ELECTRICAL & POWER MEASUREMENTS -->
-  <div>
-    <div class="sec-lbl">
-      <span class="ic-chip c-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>
-      Three-Phase Electrical & Power Analysis
+</main>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB 2: ENGINE HEALTH                                   -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="tab-engine" class="tab-panel">
+<main class="main">
+  <div class="sec-lbl">
+    <span class="ic-chip c-orange"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
+    Engine Health &amp; Diagnostics
+  </div>
+  <div class="dynamic-grid" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));">
+
+    <!-- Battery Voltage -->
+    <div class="dyn-card" id="sc-batt">
+      <div class="dyn-hdr">
+        <div class="dyn-title-wrap">
+          <span class="ic-chip c-green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="16" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/></svg></span>
+          <div><div class="dyn-title">Battery Voltage</div><div class="dyn-sub">12V DC Starter Supply</div></div>
+        </div>
+        <span class="fuel-meta-badge" id="battStatusBadge" style="background:var(--green-dim);color:var(--green)">Healthy</span>
+      </div>
+      <div class="batt-widget-container">
+        <div class="batt-cell-svg-wrap">
+          <svg viewBox="0 0 200 80" fill="none" style="width:100%;height:100%;">
+            <defs>
+              <clipPath id="battBodyClip"><rect x="16" y="14" width="156" height="52" rx="12" /></clipPath>
+              <linearGradient id="battTubeGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#475569" /><stop offset="15%" stop-color="#1e293b" /><stop offset="50%" stop-color="#0f172a" /><stop offset="85%" stop-color="#1e293b" /><stop offset="100%" stop-color="#020617" /></linearGradient>
+              <linearGradient id="battLiqGreen" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#4ade80" /><stop offset="30%" stop-color="#22c55e" /><stop offset="70%" stop-color="#16a34a" /><stop offset="100%" stop-color="#14532d" /></linearGradient>
+              <linearGradient id="battLiqRed" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f87171" /><stop offset="30%" stop-color="#ef4444" /><stop offset="70%" stop-color="#dc2626" /><stop offset="100%" stop-color="#7f1d1d" /></linearGradient>
+              <linearGradient id="metalCapGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#cbd5e1" /><stop offset="40%" stop-color="#f8fafc" /><stop offset="70%" stop-color="#94a3b8" /><stop offset="100%" stop-color="#475569" /></linearGradient>
+            </defs>
+            <rect x="174" y="27" width="10" height="26" rx="4" fill="url(#metalCapGrad)" stroke="#475569" stroke-width="1.5" />
+            <rect x="12" y="11" width="164" height="58" rx="14" fill="url(#metalCapGrad)" stroke="#334155" stroke-width="1.5" />
+            <rect x="16" y="14" width="156" height="52" rx="12" fill="url(#battTubeGrad)" />
+            <g clip-path="url(#battBodyClip)">
+              <rect id="svgBattFill" x="16" y="14" width="130" height="52" fill="url(#battLiqGreen)" style="transition: width 0.8s ease, fill 0.5s ease;" />
+              <path d="M 16 14 L 172 14 L 172 32 Q 94 38 16 32 Z" fill="#ffffff" opacity="0.25" />
+              <rect x="16" y="58" width="156" height="8" fill="#ffffff" opacity="0.1" />
+            </g>
+            <text x="94" y="46" font-size="18" font-weight="900" fill="#ffffff" text-anchor="middle" id="svgBattPctText" style="text-shadow: 0 2px 4px rgba(0,0,0,0.8);">85%</text>
+          </svg>
+        </div>
+        <div style="font-size: 18px; font-weight: 900; color: var(--text); margin-top: -4px;" id="svgBattVoltsText">12.6 V</div>
+      </div>
+      <!-- Range Bar: Battery -->
+      <div class="range-bar-wrap">
+        <div class="range-bar-track">
+          <div class="range-zone low"  style="width:12%"></div>
+          <div class="range-zone warn" style="width:8%"></div>
+          <div class="range-zone ok"   style="width:65%"></div>
+          <div class="range-zone warn" style="width:8%"></div>
+          <div class="range-zone crit" style="width:7%"></div>
+        </div>
+        <div class="range-marker" id="battRangeMarker" style="left:70%"></div>
+        <div class="range-labels"><span>11V</span><span style="color:#22c55e">12V</span><span style="color:#22c55e">14.5V</span><span style="color:#ef4444">15V</span></div>
+      </div>
+      <div class="fuel-meta-row">
+        <span>Healthy: <strong style="color:var(--green)">12.0–14.5 V</strong></span>
+        <span id="sv-batt-pct">Charge: <strong>85 %</strong></span>
+      </div>
     </div>
 
-    <!-- Featured 3-Card Grid for Phase Voltages, Phase Currents & Power -->
-    <div class="dynamic-grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin-bottom: 20px;">
-      
-      <!-- Phase Voltages Pie Card (Screenshot Exact Match) -->
-      <div class="phase-donut-card">
-        <div class="pdc-hdr">
-          <div class="pdc-title">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Coolant Temp -->
+    <div class="dyn-card" id="sc-temp">
+      <div class="dyn-hdr">
+        <div class="dyn-title-wrap">
+          <span class="ic-chip c-orange"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg></span>
+          <div><div class="dyn-title">Coolant Temp</div><div class="dyn-sub">Circular Dial Thermometer</div></div>
+        </div>
+        <span class="fuel-meta-badge" id="tempStatusBadge" style="background:var(--green-dim);color:var(--green)">Normal</span>
+      </div>
+      <div class="coolant-dial-container">
+        <div class="coolant-dial-svg-wrap">
+          <svg viewBox="0 0 200 200" style="width:100%;height:100%;">
+            <defs>
+              <radialGradient id="dialPlateGrad" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#ffffff" /><stop offset="85%" stop-color="#f8fafc" /><stop offset="100%" stop-color="#e2e8f0" /></radialGradient>
+              <filter id="dialShadow" x="-10%" y="-10%" width="120%" height="120%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.1" /></filter>
+            </defs>
+            <circle cx="100" cy="100" r="92" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="3" filter="url(#dialShadow)" />
+            <circle cx="100" cy="100" r="86" fill="url(#dialPlateGrad)" stroke="#e2e8f0" stroke-width="1.5" />
+            <path d="M 59.0 141.0 A 58 58 0 0 1 59.0 59.0" fill="none" stroke="#22c55e" stroke-width="8" stroke-linecap="round" />
+            <path d="M 59.0 59.0 A 58 58 0 0 1 100.0 42.0" fill="none" stroke="#eab308" stroke-width="8" />
+            <path d="M 100.0 42.0 A 58 58 0 0 1 141.0 59.0" fill="none" stroke="#f97316" stroke-width="8" />
+            <path d="M 141.0 59.0 A 58 58 0 0 1 141.0 141.0" fill="none" stroke="#ef4444" stroke-width="8" stroke-linecap="round" />
+            <text x="41.3" y="161.9" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">-60</text>
+            <text x="19.8" y="124.7" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">-40</text>
+            <text x="19.8" y="81.7" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">-20</text>
+            <text x="41.3" y="44.5" font-size="8" font-weight="800" fill="#15803d" text-anchor="middle">0</text>
+            <text x="78.5" y="23.0" font-size="8" font-weight="600" fill="#b45309" text-anchor="middle">20</text>
+            <text x="121.5" y="23.0" font-size="8" font-weight="600" fill="#b45309" text-anchor="middle">40</text>
+            <text x="158.7" y="44.5" font-size="8" font-weight="800" fill="#c2410c" text-anchor="middle">60</text>
+            <text x="180.2" y="81.7" font-size="8" font-weight="600" fill="#c2410c" text-anchor="middle">80</text>
+            <text x="180.2" y="124.7" font-size="8" font-weight="600" fill="#b91c1c" text-anchor="middle">100</text>
+            <text x="158.7" y="161.9" font-size="8" font-weight="800" fill="#b91c1c" text-anchor="middle">120</text>
+            <text x="100" y="152" font-size="13" font-weight="800" fill="#0f172a" text-anchor="middle">°F</text>
+            <g id="tempNeedleGroup" style="transform-origin: 100px 100px; transform: rotate(-135deg); transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);">
+              <polygon points="100,34 103,100 97,100" fill="#0f172a" />
+              <circle cx="100" cy="100" r="9" fill="#0f172a" stroke="#475569" stroke-width="1.5" />
+              <circle cx="100" cy="100" r="3.5" fill="#ffffff" />
+            </g>
+          </svg>
+        </div>
+        <div style="font-size: 18px; font-weight: 900; color: var(--text); margin-top: -4px;" id="sv-temp-num">0.0 °F</div>
+      </div>
+      <div class="fuel-meta-row">
+        <span>Healthy: <strong style="color:var(--green)">&lt; 200 °F</strong></span>
+        <span>Max: <strong style="color:var(--red)">220 °F</strong></span>
+      </div>
+    </div>
+
+    <!-- Oil Pressure -->
+    <div class="dyn-card" id="sc-oil">
+      <div class="dyn-hdr">
+        <div class="dyn-title-wrap">
+          <span class="ic-chip c-purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg></span>
+          <div><div class="dyn-title">Oil Pressure</div><div class="dyn-sub">Engine Lube Circuit</div></div>
+        </div>
+        <span class="fuel-meta-badge" id="oilStatusBadge" style="background:var(--green-dim);color:var(--green)">Optimal</span>
+      </div>
+      <div class="oil-widget-container">
+        <div class="oil-can-svg-wrap">
+          <svg viewBox="0 0 200 115" fill="none" style="width:100%;height:100%;">
+            <defs>
+              <filter id="oilCanNeonGlow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="3.5" result="glow1" /><feGaussianBlur stdDeviation="7" result="glow2" /><feMerge><feMergeNode in="glow2" /><feMergeNode in="glow1" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
+              <linearGradient id="oilTileGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#1f0a0a" /><stop offset="100%" stop-color="#0a0202" /></linearGradient>
+            </defs>
+            <rect x="8" y="6" width="184" height="103" rx="14" fill="url(#oilTileGrad)" stroke="#451111" stroke-width="1.5" />
+            <g id="svgOilCanGroup" filter="url(#oilCanNeonGlow)">
+              <path d="M 38 48 C 24 48 20 58 20 66 C 20 76 28 84 40 84 L 50 84 L 50 75 L 40 75 C 33 75 29 71 29 66 C 29 61 33 56 40 56 L 54 56 L 54 48 Z" fill="#ffd100" stroke="#ff9100" stroke-width="1"/>
+              <path d="M 76 32 L 106 32 L 106 38 L 95 38 L 95 46 L 87 46 L 87 38 L 76 38 Z" fill="#ffd100" stroke="#ff9100" stroke-width="1"/>
+              <path d="M 50 48 L 118 48 L 148 62 L 175 50 L 178 55 L 152 69 L 126 84 L 50 84 Z" fill="rgba(255, 209, 0, 0.15)" stroke="#ffd100" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"/>
+              <path d="M 176 68 C 176 68 168 80 168 86 C 168 91 172 95 176 95 C 180 95 184 91 184 86 C 184 80 176 68 176 68 Z" fill="#ffd100" stroke="#ff9100" stroke-width="1.2"/>
+            </g>
+            <text x="100" y="102" font-size="9" font-weight="900" fill="#fb8500" text-anchor="middle" letter-spacing="1.2" id="svgOilTileText">ENGINE OIL PRESSURE</text>
+          </svg>
+        </div>
+        <div style="font-size: 20px; font-weight: 900; color: #d97706; font-variant-numeric: tabular-nums; margin-top: -2px;" id="sv-oil-num">0.0 psi</div>
+      </div>
+      <!-- Range Bar: Oil Pressure -->
+      <div class="range-bar-wrap">
+        <div class="range-bar-track">
+          <div class="range-zone low"  style="width:20%"></div>
+          <div class="range-zone warn" style="width:10%"></div>
+          <div class="range-zone ok"   style="width:60%"></div>
+          <div class="range-zone warn" style="width:5%"></div>
+          <div class="range-zone crit" style="width:5%"></div>
+        </div>
+        <div class="range-marker" id="oilRangeMarker" style="left:0%"></div>
+        <div class="range-labels"><span>0</span><span style="color:#ef4444">20</span><span style="color:#f59e0b">30</span><span style="color:#22c55e">90</span><span style="color:#ef4444">100 psi</span></div>
+      </div>
+      <div class="fuel-meta-row">
+        <span>Healthy: <strong style="color:var(--green)">30–90 psi</strong></span>
+        <span>Min: <strong style="color:var(--red)">20.0 psi</strong></span>
+      </div>
+    </div>
+
+    <!-- Active Fault -->
+    <div class="dyn-card" id="sc-fault">
+      <div class="dyn-hdr">
+        <div class="dyn-title-wrap">
+          <span class="ic-chip c-red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
+          <div><div class="dyn-title">Active Fault</div><div class="dyn-sub">Diagnostics &amp; Alarms</div></div>
+        </div>
+        <span class="fuel-meta-badge" id="faultStatusBadge" style="background:var(--green-dim);color:var(--green)">System Safe</span>
+      </div>
+      <div class="fault-widget-container">
+        <div class="fault-hud-box" id="faultHudBox">
+          <div class="fault-hud-grid"></div>
+          <div class="fault-hud-corner tl"></div><div class="fault-hud-corner tr"></div>
+          <div class="fault-hud-corner bl"></div><div class="fault-hud-corner br"></div>
+          <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" id="svgFaultIcon" style="filter: drop-shadow(0 0 8px rgba(34, 197, 94, 0.7)); transition: all 0.4s ease;">
               <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
-              <path d="M12 9v4"/><path d="M12 17h.01"/>
-            </svg>
-            Phase Voltages
-          </div>
-          <div class="pdc-expand-btn" title="Expand view">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+              <line x1="12" y1="9" x2="12" y2="13" stroke-width="2.5"/>
+              <circle cx="12" cy="17" r="1.2" fill="currentColor" stroke="none"/>
             </svg>
           </div>
-        </div>
-        <div class="pdc-body">
-          <div class="pdc-list">
-            <div class="pdc-item">
-              <div class="pdc-item-left">
-                <span class="pdc-dot" style="background:#0ea652"></span>
-                <span>L1-N</span>
-              </div>
-              <span class="pdc-val" id="pieL1NVal">0 V</span>
-            </div>
-            <div class="pdc-item">
-              <div class="pdc-item-left">
-                <span class="pdc-dot" style="background:#ff4d4f"></span>
-                <span>L2-N</span>
-              </div>
-              <span class="pdc-val" id="pieL2NVal">0 V</span>
-            </div>
-            <div class="pdc-item">
-              <div class="pdc-item-left">
-                <span class="pdc-dot" style="background:#fadb14"></span>
-                <span>L3-N</span>
-              </div>
-              <span class="pdc-val" id="pieL3NVal">0 V</span>
-            </div>
-          </div>
-          <div class="pdc-chart-wrap">
-            <canvas id="phaseVoltPie"></canvas>
+          <div style="display:flex;flex-direction:column;z-index:2;">
+            <span style="font-size:10px;font-weight:800;color:#94a3b8;letter-spacing:1.2px;text-transform:uppercase;">DIAGNOSTIC STATUS</span>
+            <span style="font-size:18px;font-weight:900;color:#22c55e;line-height:1.2;margin-top:2px;" id="sv-fault-code">NORMAL (#0)</span>
+            <span style="font-size:11px;font-weight:700;color:#64748b;margin-top:1px;" id="sv-fault-sub">Severity: None</span>
           </div>
         </div>
       </div>
-
-      <!-- Phase Currents Pie Card -->
-      <div class="phase-donut-card">
-        <div class="pdc-hdr">
-          <div class="pdc-title">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
-            </svg>
-            Phase Currents
-          </div>
-          <div class="pdc-expand-btn" title="Expand view">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
-            </svg>
-          </div>
-        </div>
-        <div class="pdc-body">
-          <div class="pdc-list">
-            <div class="pdc-item">
-              <div class="pdc-item-left">
-                <span class="pdc-dot" style="background:#d97706"></span>
-                <span>L1 Current</span>
-              </div>
-              <span class="pdc-val" id="pieL1CurrVal">0.0 A</span>
-            </div>
-            <div class="pdc-item">
-              <div class="pdc-item-left">
-                <span class="pdc-dot" style="background:#e11d3c"></span>
-                <span>L2 Current</span>
-              </div>
-              <span class="pdc-val" id="pieL2CurrVal">0.0 A</span>
-            </div>
-            <div class="pdc-item">
-              <div class="pdc-item-left">
-                <span class="pdc-dot" style="background:#2563eb"></span>
-                <span>L3 Current</span>
-              </div>
-              <span class="pdc-val" id="pieL3CurrVal">0.0 A</span>
-            </div>
-          </div>
-          <div class="pdc-chart-wrap">
-            <canvas id="phaseCurrPie"></canvas>
-          </div>
-        </div>
+      <div class="fuel-meta-row">
+        <span>Fault Severity</span>
+        <span id="ss-fault-sev" style="font-weight:700;color:var(--green)">None</span>
       </div>
-
-      <!-- Line Voltages Pie Card (Screenshot 2 Match) -->
-      <div class="phase-donut-card">
-        <div class="pdc-hdr">
-          <div class="pdc-title">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
-              <path d="M12 9v4"/><path d="M12 17h.01"/>
-            </svg>
-            Line Voltages
-          </div>
-          <div class="pdc-expand-btn" title="Expand view">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
-            </svg>
-          </div>
-        </div>
-        <div class="pdc-body">
-          <div class="pdc-list">
-            <div class="pdc-item">
-              <div class="pdc-item-left">
-                <span class="pdc-dot" style="background:#0ea652"></span>
-                <span>L1-L2</span>
-              </div>
-              <span class="pdc-val" id="cardL1L2">0 V</span>
-            </div>
-            <div class="pdc-item">
-              <div class="pdc-item-left">
-                <span class="pdc-dot" style="background:#ff4d4f"></span>
-                <span>L2-L3</span>
-              </div>
-              <span class="pdc-val" id="cardL2L3">0 V</span>
-            </div>
-            <div class="pdc-item">
-              <div class="pdc-item-left">
-                <span class="pdc-dot" style="background:#fadb14"></span>
-                <span>L3-L1</span>
-              </div>
-              <span class="pdc-val" id="cardL3L1">0 V</span>
-            </div>
-          </div>
-          <div class="pdc-chart-wrap">
-            <canvas id="lineVoltPie"></canvas>
-          </div>
-        </div>
-      </div>
-
     </div>
   </div>
+</main>
+</div>
 
-  <div class="two-col" style="margin-bottom: 20px;">
-    <!-- Phase & Line Voltages -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB 3: ELECTRICAL                                      -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="tab-electrical" class="tab-panel">
+<main class="main">
+  <div class="sec-lbl">
+    <span class="ic-chip c-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>
+    Three-Phase Electrical &amp; Power Analysis
+  </div>
+  <div class="dynamic-grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin-bottom: 20px;">
+    <!-- Phase Voltages -->
+    <div class="phase-donut-card">
+      <div class="pdc-hdr"><div class="pdc-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>Phase Voltages</div></div>
+      <div class="pdc-body">
+        <div class="pdc-list">
+          <div class="pdc-item"><div class="pdc-item-left"><span class="pdc-dot" style="background:#0ea652"></span><span>L1-N</span></div><span class="pdc-val" id="pieL1NVal">0 V</span></div>
+          <div class="pdc-item"><div class="pdc-item-left"><span class="pdc-dot" style="background:#ff4d4f"></span><span>L2-N</span></div><span class="pdc-val" id="pieL2NVal">0 V</span></div>
+          <div class="pdc-item"><div class="pdc-item-left"><span class="pdc-dot" style="background:#fadb14"></span><span>L3-N</span></div><span class="pdc-val" id="pieL3NVal">0 V</span></div>
+        </div>
+        <div class="pdc-chart-wrap"><canvas id="phaseVoltPie"></canvas></div>
+      </div>
+    </div>
+    <!-- Phase Currents -->
+    <div class="phase-donut-card">
+      <div class="pdc-hdr"><div class="pdc-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>Phase Currents</div></div>
+      <div class="pdc-body">
+        <div class="pdc-list">
+          <div class="pdc-item"><div class="pdc-item-left"><span class="pdc-dot" style="background:#d97706"></span><span>L1 Current</span></div><span class="pdc-val" id="pieL1CurrVal">0.0 A</span></div>
+          <div class="pdc-item"><div class="pdc-item-left"><span class="pdc-dot" style="background:#e11d3c"></span><span>L2 Current</span></div><span class="pdc-val" id="pieL2CurrVal">0.0 A</span></div>
+          <div class="pdc-item"><div class="pdc-item-left"><span class="pdc-dot" style="background:#2563eb"></span><span>L3 Current</span></div><span class="pdc-val" id="pieL3CurrVal">0.0 A</span></div>
+        </div>
+        <div class="pdc-chart-wrap"><canvas id="phaseCurrPie"></canvas></div>
+      </div>
+    </div>
+    <!-- Line Voltages -->
+    <div class="phase-donut-card">
+      <div class="pdc-hdr"><div class="pdc-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>Line Voltages</div></div>
+      <div class="pdc-body">
+        <div class="pdc-list">
+          <div class="pdc-item"><div class="pdc-item-left"><span class="pdc-dot" style="background:#0ea652"></span><span>L1-L2</span></div><span class="pdc-val" id="cardL1L2">0 V</span></div>
+          <div class="pdc-item"><div class="pdc-item-left"><span class="pdc-dot" style="background:#ff4d4f"></span><span>L2-L3</span></div><span class="pdc-val" id="cardL2L3">0 V</span></div>
+          <div class="pdc-item"><div class="pdc-item-left"><span class="pdc-dot" style="background:#fadb14"></span><span>L3-L1</span></div><span class="pdc-val" id="cardL3L1">0 V</span></div>
+        </div>
+        <div class="pdc-chart-wrap"><canvas id="lineVoltPie"></canvas></div>
+      </div>
+    </div>
+  </div>
+  <div class="two-col">
     <div>
-      <div class="sec-lbl">
-        <span class="ic-chip c-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>
-        Phase & Line Voltages / Currents Detailed Breakdown
-      </div>
+      <div class="sec-lbl"><span class="ic-chip c-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>Phase &amp; Line Voltages / Currents</div>
       <div class="status-grid" id="elecGrid"></div>
     </div>
-
-    <!-- Power Measurements -->
     <div>
-      <div class="sec-lbl">
-        <span class="ic-chip c-teal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
-        Active, Apparent & Reactive Power Breakdown
-      </div>
+      <div class="sec-lbl"><span class="ic-chip c-teal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>Active, Apparent &amp; Reactive Power</div>
       <div class="status-grid" id="powerGrid"></div>
     </div>
   </div>
+</main>
+</div>
 
-  <!-- 5. VOLTAGE HISTORY CHART -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB 4: ANALYTICS                                       -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="tab-analytics" class="tab-panel">
+<main class="main">
+
+  <!-- Running Time & Cost Trend -->
+  <div class="chart-card">
+    <div class="chart-hdr">
+      <div class="chart-title">
+        <span class="ic-chip c-purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
+        Running Time &amp; Cost Trend
+      </div>
+      <div class="range-btns" style="display:flex;align-items:center;gap:6px;">
+        <button class="range-btn" onclick="setActiveRangeBtn(this); loadTrend(24)">1D</button>
+        <button class="range-btn active" onclick="setActiveRangeBtn(this); loadTrend(168)">1W</button>
+        <button class="range-btn" onclick="setActiveRangeBtn(this); loadTrend(720)">1MO</button>
+        <button class="range-btn reset-zoom-btn" onclick="resetTrendZoom()" title="Reset Zoom View" style="padding:4px 9px;font-size:11px;font-weight:700;background:#e2e8f0;color:#334155;border:none;border-radius:6px;cursor:pointer;margin-left:4px;transition:all 0.2s;">🔍 Reset Zoom</button>
+      </div>
+    </div>
+    <div class="chart-wrap" style="height:280px"><canvas id="trendChart"></canvas></div>
+  </div>
+
+  <!-- Monthly KPIs -->
+  <div class="two-col">
+    <div class="chart-card">
+      <div class="chart-hdr">
+        <div class="chart-title"><span class="ic-chip c-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>Monthly Runtime Hours</div>
+        <div class="range-btns">
+          <button class="range-btn active" onclick="setActiveRangeBtn(this); loadKpi(6,'runtime')">6 mo</button>
+          <button class="range-btn" onclick="setActiveRangeBtn(this); loadKpi(12,'runtime')">12 mo</button>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="runtimeChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-hdr">
+        <div class="chart-title"><span class="ic-chip c-orange"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12M6 8h12M6 13l7 8M6 13h3a5 5 0 0 0 0-10"/></svg></span>Monthly Estimated Fuel Cost (₹)</div>
+        <div class="range-btns">
+          <button class="range-btn active" onclick="setActiveRangeBtn(this); loadKpi(6,'cost')">6 mo</button>
+          <button class="range-btn" onclick="setActiveRangeBtn(this); loadKpi(12,'cost')">12 mo</button>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="costChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Voltage History -->
   <div class="chart-card">
     <div class="chart-hdr">
       <div class="chart-title">
@@ -2068,69 +2008,114 @@ body {
     <div class="chart-wrap"><canvas id="voltChart"></canvas></div>
   </div>
 
-  <!-- 6. 2-COLUMN MONTHLY KPIS -->
-  <div class="two-col">
-    <div class="chart-card">
-      <div class="chart-hdr">
-        <div class="chart-title">
-          <span class="ic-chip c-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
-          Monthly Runtime Hours
-        </div>
-        <div class="range-btns">
-          <button class="range-btn active" onclick="setActiveRangeBtn(this); loadKpi(6,'runtime')">6 mo</button>
-          <button class="range-btn" onclick="setActiveRangeBtn(this); loadKpi(12,'runtime')">12 mo</button>
-        </div>
-      </div>
-      <div class="chart-wrap"><canvas id="runtimeChart"></canvas></div>
-    </div>
-    <div class="chart-card">
-      <div class="chart-hdr">
-        <div class="chart-title">
-          <span class="ic-chip c-orange"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12M6 8h12M6 13l7 8M6 13h3a5 5 0 0 0 0-10"/></svg></span>
-          Monthly Estimated Fuel Cost (₹)
-        </div>
-        <div class="range-btns">
-          <button class="range-btn active" onclick="setActiveRangeBtn(this); loadKpi(6,'cost')">6 mo</button>
-          <button class="range-btn" onclick="setActiveRangeBtn(this); loadKpi(12,'cost')">12 mo</button>
-        </div>
-      </div>
-      <div class="chart-wrap"><canvas id="costChart"></canvas></div>
-    </div>
-  </div>
+</main>
+</div>
 
-  <!-- 8. YAHOO FINANCE STYLE RUNNING TIME & COST TREND CHART -->
-  <div class="chart-card">
-    <div class="chart-hdr">
-      <div class="chart-title">
-        <span class="ic-chip c-purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
-        Running Time & Cost Trend (Yahoo Finance Style)
-      </div>
-      <div class="range-btns" style="display:flex;align-items:center;gap:6px;">
-        <button class="range-btn" onclick="setActiveRangeBtn(this); loadTrend(24)">1D</button>
-        <button class="range-btn active" onclick="setActiveRangeBtn(this); loadTrend(168)">1W</button>
-        <button class="range-btn" onclick="setActiveRangeBtn(this); loadTrend(720)">1MO</button>
-        <button class="range-btn reset-zoom-btn" onclick="resetTrendZoom()" title="Reset Zoom View" style="padding:4px 9px;font-size:11px;font-weight:700;background:#e2e8f0;color:#334155;border:none;border-radius:6px;cursor:pointer;margin-left:4px;transition:all 0.2s;">🔍 Reset Zoom</button>
-      </div>
-    </div>
-    <div class="chart-wrap" style="height:280px"><canvas id="trendChart"></canvas></div>
-  </div>
-
-  <!-- 9. DOCUMENTS & MANUALS -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB 5: DOCUMENTS                                       -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="tab-documents" class="tab-panel">
+<main class="main">
   <div class="docs-card">
     <div class="sec-lbl">
       <span class="ic-chip c-blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>
-      Technical Manuals & Documents
+      Technical Manuals &amp; Documents
     </div>
     <div class="docs-grid" id="docsGrid">
       <div style="color:var(--text3);font-size:13px">Loading documents…</div>
     </div>
   </div>
-
 </main>
+</div>
 
-<footer class="footer">
-  Diesel Generator Monitoring Platform v2 · Cummins PS0600 / PCC1301 · PostgreSQL Backend · Real-time Modbus Link
-</footer>
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB 6: MAINTENANCE                                     -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="tab-maintenance" class="tab-panel">
+<main class="main">
+
+  <!-- Preventive Maintenance Schedule -->
+  <div class="maint-card">
+    <div class="sec-lbl">
+      <span class="ic-chip c-amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
+      Preventive Maintenance Schedule — Cummins PS0600
+    </div>
+    <table class="maint-table">
+      <thead>
+        <tr>
+          <th>Service Item</th>
+          <th>Interval</th>
+          <th>Details</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Engine Oil &amp; Filter Change</td><td><span class="interval-badge">250 hrs</span></td><td>SAE 15W-40 API CH-4 / CI-4. Drain, refill &amp; replace filter.</td><td class="maint-due-ok">✓ Up to Date</td></tr>
+        <tr><td>Air Filter Inspection</td><td><span class="interval-badge">250 hrs</span></td><td>Check restriction indicator. Clean or replace if clogged.</td><td class="maint-due-ok">✓ Up to Date</td></tr>
+        <tr><td>Fuel Filter Replacement</td><td><span class="interval-badge">500 hrs</span></td><td>Replace primary &amp; secondary fuel filters. Bleed air from system.</td><td class="maint-due-warn">⚠ Due Soon</td></tr>
+        <tr><td>Coolant / Antifreeze Check</td><td><span class="interval-badge">500 hrs</span></td><td>Check SCA concentration, pH level &amp; freeze point. Top up if needed.</td><td class="maint-due-ok">✓ Up to Date</td></tr>
+        <tr><td>Drive Belt Inspection</td><td><span class="interval-badge">500 hrs</span></td><td>Check belt tension and condition. Replace if cracked or worn.</td><td class="maint-due-ok">✓ Up to Date</td></tr>
+        <tr><td>Battery Terminal Cleaning</td><td><span class="interval-badge">500 hrs</span></td><td>Clean terminals, check voltage &amp; electrolyte level.</td><td class="maint-due-ok">✓ Up to Date</td></tr>
+        <tr><td>Full Major Service</td><td><span class="interval-badge">1000 hrs</span></td><td>Injector test, timing check, full coolant flush, valve clearance.</td><td class="maint-due-ok">✓ Up to Date</td></tr>
+        <tr><td>Annual Load Test</td><td><span class="interval-badge">Annual</span></td><td>Run at 100% rated load for 2 hrs to verify performance &amp; cooling.</td><td class="maint-due-ok">✓ Completed</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Corrective Maintenance -->
+  <div class="maint-card">
+    <div class="sec-lbl">
+      <span class="ic-chip c-red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
+      Corrective Maintenance Log
+    </div>
+    <table class="maint-table">
+      <thead>
+        <tr><th>Date</th><th>Issue Reported</th><th>Action Taken</th><th>Technician</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="white-space:nowrap;color:var(--text3);font-size:12px;">—</td>
+          <td colspan="3" style="color:var(--text3);font-style:italic;">No corrective maintenance records yet. Issues will appear here after service visits.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Contact Directory -->
+  <div class="maint-card">
+    <div class="sec-lbl">
+      <span class="ic-chip c-teal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.64 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 8.91a16 16 0 0 0 6 6l.81-.81a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>
+      Service Contact Directory
+    </div>
+    <div class="contact-grid">
+      <div class="contact-card">
+        <div class="contact-avatar">SM</div>
+        <div>
+          <div class="contact-name">U Mansur</div>
+          <div class="contact-role">Service Manager</div>
+          <div class="contact-phone">9445037116</div>
+        </div>
+      </div>
+      <div class="contact-card">
+        <div class="contact-avatar" style="background:var(--orange-dim);color:var(--orange)">HS</div>
+        <div>
+          <div class="contact-name">CV Subramanian</div>
+          <div class="contact-role">Head Service</div>
+          <div class="contact-phone">9445037139</div>
+        </div>
+      </div>
+      <div class="contact-card">
+        <div class="contact-avatar" style="background:var(--purple-dim);color:var(--purple)">CEO</div>
+        <div>
+          <div class="contact-name">Atul Niranjan Thakur</div>
+          <div class="contact-role">Chief Executive Officer</div>
+          <div class="contact-phone">9677961555</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
 
 <script>
 // ── Helpers ────────────────────────────────────────────────
@@ -2285,6 +2270,107 @@ function updateClock() {
   });
 }
 
+
+// ── Tab Switching ───────────────────────────────────────────
+function switchTab(tabId, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  const panel = document.getElementById('tab-' + tabId);
+  if (panel) panel.classList.add('active');
+  if (btn) btn.classList.add('active');
+  // Lazy-load analytics charts when switching to that tab
+  if (tabId === 'analytics') {
+    loadVoltChart(6);
+    loadKpi(6, 'runtime');
+    loadKpi(6, 'cost');
+    loadTrend(168);
+  }
+  if (tabId === 'documents') loadDocs();
+}
+
+// ── Notification Read/Unread System (Email-Style) ───────────
+let _notifFilter  = 'all'; // 'all' | 'unread' | 'read'
+
+async function markAsRead(alarmId, event) {
+  if (event) event.stopPropagation();
+  const alarm = _alarmsCache.find(a => Number(a.id) === Number(alarmId));
+  if (!alarm || alarm.is_read) return;
+  alarm.is_read = true;
+  renderNotifModalBody();
+  updateNotifBell();
+  try {
+    await fetch('/api/alarms/read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: alarmId })
+    });
+  } catch (e) {
+    alarm.is_read = false;
+    renderNotifModalBody();
+    updateNotifBell();
+  }
+}
+async function markAllRead(event) {
+  if (event) event.stopPropagation();
+  _alarmsCache.forEach(a => { a.is_read = true; });
+  renderNotifModalBody();
+  updateNotifBell();
+  try {
+    await fetch('/api/alarms/read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ all: true })
+    });
+  } catch (e) {}
+}
+function switchNotifTab(filter, btn) {
+  _notifFilter = filter;
+  document.querySelectorAll('.notif-tab').forEach(t => t.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderNotifModalBody();
+}
+
+function formatNotificationTime(isoTimestamp) {
+  if (!isoTimestamp) return 'Active';
+  const date = new Date(isoTimestamp);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const sameDate = (left, right) =>
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate();
+  const dayLabel = sameDate(date, now) ? 'Today' :
+    sameDate(date, yesterday) ? 'Yesterday' :
+    date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const timeLabel = date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  return `${dayLabel}, ${timeLabel}`;
+}
+function updateNotifBell() {
+  const unread = _alarmsCache.filter(a => !a.is_read);
+  const notifBtn   = el('notifBellBtn');
+  const notifBadge = el('notifBadge');
+  const uCount     = el('ntabUnreadCount');
+  if (unread.length > 0) {
+    notifBtn.classList.add('has-alarms');
+    notifBadge.textContent = unread.length;
+    notifBadge.classList.add('visible');
+    if (uCount) { uCount.textContent = unread.length; uCount.style.display = 'inline'; }
+  } else {
+    notifBtn.classList.remove('has-alarms');
+    notifBadge.classList.remove('visible');
+    if (uCount) uCount.style.display = 'none';
+  }
+}
+
+// ── Range Indicator Updaters ────────────────────────────────
+function updateRangeMarker(markerId, value, min, max) {
+  const marker = el(markerId);
+  if (!marker) return;
+  const pct = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+  marker.style.left = pct + '%';
+}
+
 // ── Notification Dropdown Panel Controls ───────────────────
 let _alarmsCache = [];
 
@@ -2295,6 +2381,7 @@ function toggleNotifPanel() {
   } else {
     renderNotifModalBody();
     overlay.classList.add('show');
+    updateNotifBell();
   }
 }
 
@@ -2303,126 +2390,87 @@ function closeNotifPanel(e) {
   el('notifOverlay').classList.remove('show');
 }
 
-let _silencedAlarmIds = new Set(JSON.parse(localStorage.getItem('dg_silenced_alarms') || '[]'));
-
-async function ackAlarm(alarmId, event) {
-  if (event) event.stopPropagation();
-  if (!alarmId) return;
-  _silencedAlarmIds.add(Number(alarmId));
-  localStorage.setItem('dg_silenced_alarms', JSON.stringify([..._silencedAlarmIds]));
-  
-  // Optimistically remove from cache
-  _alarmsCache = _alarmsCache.filter(a => Number(a.id) !== Number(alarmId));
-  renderNotifModalBody();
-  
-  const notifBadge = el('notifBadge');
-  const notifBtn = el('notifBellBtn');
-  if (_alarmsCache.length > 0) {
-    if (notifBadge) notifBadge.textContent = _alarmsCache.length;
-  } else {
-    if (notifBtn) notifBtn.classList.remove('has-alarms');
-    if (notifBadge) notifBadge.classList.remove('visible');
-  }
-
-  try {
-    await fetch('/api/alarms/ack', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: alarmId })
-    });
-  } catch(e) {}
-}
-
-async function ackAllAlarms(event) {
-  if (event) event.stopPropagation();
-  _alarmsCache.forEach(a => { if (a.id) _silencedAlarmIds.add(Number(a.id)); });
-  localStorage.setItem('dg_silenced_alarms', JSON.stringify([..._silencedAlarmIds]));
-  
-  _alarmsCache = [];
-  renderNotifModalBody();
-
-  const notifBadge = el('notifBadge');
-  const notifBtn = el('notifBellBtn');
-  if (notifBtn) notifBtn.classList.remove('has-alarms');
-  if (notifBadge) notifBadge.classList.remove('visible');
-
-  try {
-    await fetch('/api/alarms/ack', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ all: true })
-    });
-  } catch(e) {}
-}
-
 function renderNotifModalBody() {
   const container = el('notifModalBody');
   const countSpan = el('notifModalCount');
   if (countSpan) countSpan.textContent = _alarmsCache.length;
-
-  if (!_alarmsCache || _alarmsCache.length === 0) {
-    container.innerHTML = `
-      <div class="notif-empty">
-        <div class="notif-empty-icon">✓</div>
-        <div class="notif-empty-text">All Systems Nominal</div>
-        <div class="notif-empty-sub">No active alarms or critical events detected. Generator is operating safely.</div>
-      </div>
-    `;
-    return;
-  }
 
   const alarmHelp = {
     'GENSET_RUNNING': 'Generator engine started & running. Telemetry is being logged.',
     'GENSET_STOPPED': 'Generator engine has stopped operating.',
     'LOW_FUEL': 'Immediate action: Refuel primary diesel storage tank (Reserve is below 30%).'
   };
-
   const alarmTitles = {
     'genset_running': 'Generator Started & Running',
     'genset_stopped': 'Generator Stopped',
     'low_fuel': 'Low Fuel Level (<30%)'
   };
 
-  container.innerHTML = _alarmsCache.map(a => {
-    const typeKey = (a.alarm_type || '').toUpperCase();
-    const isInfo = a.severity === 'info' || typeKey.includes('RUNNING') || typeKey.includes('STOPPED');
+  // Apply filter
+  let filtered = _alarmsCache;
+  if (_notifFilter === 'unread') filtered = _alarmsCache.filter(a => !a.is_read);
+  if (_notifFilter === 'read')   filtered = _alarmsCache.filter(a => a.is_read);
+
+  if (!filtered || filtered.length === 0) {
+    const emptyMsg = _notifFilter === 'unread' ? 'No unread notifications.' :
+                     _notifFilter === 'read'   ? 'No read notifications yet.' :
+                     'No active alarms or critical events detected.';
+    container.innerHTML = `
+      <div class="notif-empty">
+        <div class="notif-empty-icon">✓</div>
+        <div class="notif-empty-text">All Clear</div>
+        <div class="notif-empty-sub">${emptyMsg}</div>
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(a => {
+    const typeKey  = (a.alarm_type || '').toUpperCase();
+    const isRead   = Boolean(a.is_read);
+    const isInfo   = a.severity === 'info' || typeKey.includes('RUNNING') || typeKey.includes('STOPPED');
     const isCritical = a.severity === 'critical' || typeKey.includes('LOW_FUEL');
-    const badgeType = isCritical ? 'CRITICAL ALARM' : isInfo ? 'EVENT' : 'WARNING';
+    const badgeType  = isCritical ? 'CRITICAL ALARM' : isInfo ? 'EVENT' : 'WARNING';
     const badgeClass = isCritical ? '' : isInfo ? 'info' : 'warn';
-    const title = alarmTitles[a.alarm_type] || (a.alarm_type || 'Safety Alert').replace(/_/g, ' ');
-    const triggerVal = a.trigger_value != null ? Number(a.trigger_value).toFixed(1) : '—';
-    const threshVal = a.threshold_value != null ? Number(a.threshold_value).toFixed(1) : '—';
-    const timeStr = a.opened_at ? new Date(a.opened_at).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) : 'Active';
-    const advice = alarmHelp[typeKey] || 'Verify operational parameters and safety interlocks.';
+    const title    = alarmTitles[a.alarm_type] || (a.alarm_type || 'Safety Alert').replace(/_/g, ' ');
+    const extra = a.extra || {};
+    const reading = typeKey.includes('LOW_FUEL')
+      ? `Fuel level: ${extra['Fuel level'] || '—'} %`
+      : typeKey.includes('RUNNING') || typeKey.includes('STOPPED')
+        ? `Engine speed: ${extra['Average engine speed'] || '—'} rpm`
+        : '—';
+    const threshold = typeKey.includes('LOW_FUEL') ? '30 %' :
+      typeKey.includes('RUNNING') || typeKey.includes('STOPPED') ? '1500 rpm' : '—';
+    const timeStr = formatNotificationTime(a.opened_at);
+    const advice   = alarmHelp[typeKey] || 'Verify operational parameters and safety interlocks.';
+    const unreadClass = !isRead ? 'unread' : '';
 
     return `
-      <div class="alarm-card-item ${isCritical ? '' : isInfo ? 'info' : 'warn'}">
+      <div class="alarm-card-item ${isCritical ? '' : isInfo ? 'info' : 'warn'} ${unreadClass}">
         <div class="aci-top">
-          <span class="aci-badge ${badgeClass}">${badgeType}</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            ${!isRead ? '<span class="unread-dot"></span>' : ''}
+            <span class="aci-badge ${badgeClass}">${badgeType}</span>
+          </div>
           <span class="aci-time">${timeStr}</span>
         </div>
-        <div class="aci-name">${title}</div>
-        <div class="aci-detail">Reading: <strong>${triggerVal}</strong> (Safe threshold: ${threshVal})</div>
+        <div class="aci-name ${!isRead ? 'unread-txt' : ''}">${title}</div>
+        <div class="aci-detail">Reading: <strong>${reading}</strong> (Safe threshold: ${threshold})</div>
         ${a.tb_email_sent ? `
         <div class="aci-email-info confirmed">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
-          <span>ThingsBoard: Email delivered to <strong>${a.tb_email_recipients || 'Divakar & Admin'}</strong></span>
-        </div>
-        ` : `
+          <span>Email delivered to <strong>${a.tb_email_recipients || 'Divakar & Admin'}</strong></span>
+        </div>` : `
         <div class="aci-email-info">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
-          <span>Email alert configured for: <strong>${a.tb_email_recipients || 'Divakar & Admin'}</strong></span>
-        </div>
-        `}
+          <span>Alert configured for: <strong>${a.tb_email_recipients || 'Divakar & Admin'}</strong></span>
+        </div>`}
         <div class="aci-actions-row">
           <div class="aci-action">⚠ ${advice}</div>
-          <button class="aci-ack-btn" onclick="ackAlarm(${a.id}, event)" title="Acknowledge & Silence this alarm">
+          <button class="aci-read-btn" onclick="markAsRead(${a.id}, event)" title="Mark as read" aria-label="Mark notification as read">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
-            <span>Acknowledge</span>
           </button>
         </div>
-      </div>
-    `;
+      </div>`;
   }).join('');
 }
 
@@ -2456,18 +2504,14 @@ function toggleAudio() {
 
 function checkAndTriggerAlarmAudio() {
   if (!_audioEnabled || !_alarmsCache || _alarmsCache.length === 0) return;
-  
-  // Filter only un-silenced active alarms
-  const unAckAlarms = _alarmsCache.filter(a => !a.id || !_silencedAlarmIds.has(Number(a.id)));
-  if (unAckAlarms.length === 0) return;
 
   // Only trigger audio for critical severity alarms or on first detection of an alarm
-  const hasCritical = unAckAlarms.some(a => (a.severity || '').toLowerCase() === 'critical');
-  const hasNewAlert = unAckAlarms.some(a => a.id && !_playedAlarmIds.has(a.id));
+  const hasCritical = _alarmsCache.some(a => (a.severity || '').toLowerCase() === 'critical');
+  const hasNewAlert = _alarmsCache.some(a => a.id && !_playedAlarmIds.has(a.id));
   
   if (hasCritical || hasNewAlert) {
     playAlarmBeep();
-    unAckAlarms.forEach(a => { if (a.id) _playedAlarmIds.add(a.id); });
+    _alarmsCache.forEach(a => { if (a.id) _playedAlarmIds.add(a.id); });
   }
 }
 
@@ -2517,22 +2561,9 @@ async function updateStatus() {
     _alarmsCache = alarms || [];
     const v = data.values || {};
 
-    if (data.usr) {
-      el('hdrSub').textContent = `${data.usr.ip}:${data.usr.port} · Slave ${data.usr.slave_id} · Cummins PS0600`;
-    }
-
-    // ── Update Notification Bell & Badge in Header ─────────
-    const notifBtn = el('notifBellBtn');
-    const notifBadge = el('notifBadge');
-    if (_alarmsCache.length > 0) {
-      notifBtn.classList.add('has-alarms');
-      notifBadge.textContent = _alarmsCache.length;
-      notifBadge.classList.add('visible');
-      checkAndTriggerAlarmAudio();
-    } else {
-      notifBtn.classList.remove('has-alarms');
-      notifBadge.classList.remove('visible');
-    }
+    // ── Update Notification Bell (unread count) ─────────────
+    updateNotifBell();
+    if (_alarmsCache.length > 0) checkAndTriggerAlarmAudio();
 
     // If modal is currently open, refresh its content live
     if (el('notifOverlay').classList.contains('show')) {
@@ -2581,6 +2612,7 @@ async function updateStatus() {
       fuelBadge.style.color = 'var(--green)';
     }
     el('fuelEstimatedLiters').innerHTML = fuel != null ? `Reserve: <strong>${(fuelPct * 10).toFixed(0)} L</strong>` : '— Litres';
+    updateRangeMarker('fuelRangeMarker', fuelPct, 0, 100);
 
     // ── 2. DYNAMIC CONTROL SWITCH WIDGET UPDATE ────────────
     let sw = v['Control switch position'];
@@ -2630,6 +2662,7 @@ async function updateStatus() {
     if (needleEl) {
       needleEl.style.transform = `rotate(${needleDeg.toFixed(1)}deg)`;
     }
+    updateRangeMarker('rpmRangeMarker', rpmVal, 0, 2000);
 
     let gs = v['Genset state'] || (data.is_running ? 'Running' : 'Stopped');
     if (gs === 'Unknown (124)' || gs === '124') gs = 'Stopped';
@@ -2660,6 +2693,7 @@ async function updateStatus() {
     const freqVal = freq != null ? Number(freq) : 0;
     const freqBad = freq != null && data.is_running && (freqVal < 47.0 || freqVal > 53.0);
     el('dynFreqVal').textContent = fmt(freq, 'Hz', 2);
+    updateRangeMarker('freqRangeMarker', freqVal, 45, 55);
     const kva = v['Total kVA'];
     el('dynKvaVal').innerHTML = `<strong>${fmt(kva, 'kVA', 1)}</strong>`;
 
@@ -2669,6 +2703,7 @@ async function updateStatus() {
     const battVolts = batt != null ? Number(batt) : 0;
     const battLow = batt != null && batt < 11.8;
     const battPct = Math.max(0, Math.min(100, ((battVolts - 10.0) / (14.5 - 10.0)) * 100));
+    updateRangeMarker('battRangeMarker', battVolts, 11, 15);
     
     const svgBattFill = el('svgBattFill');
     if (svgBattFill) {
@@ -2727,6 +2762,7 @@ async function updateStatus() {
       el('sv-oil-num').textContent = `${oilVal.toFixed(1)} psi`;
       el('sv-oil-num').style.color = oilLow ? '#ef4444' : '#d97706';
     }
+    updateRangeMarker('oilRangeMarker', oilVal, 0, 100);
     
     const oilGroup = el('svgOilCanGroup');
     const oilBadge = el('oilStatusBadge');
@@ -3164,32 +3200,45 @@ async function loadKpi(months, type='runtime') {
   } catch(e) {}
 }
 
-// ── Yahoo Finance-Style Running Time & Cost Trend Chart ────
+// ── Running Time & Cost Trend Chart ────────────────────────
 async function loadTrend(hours) {
   try {
     const res = await fetch(`/api/history?hours=${hours}`, { cache: 'no-store' });
     const { rows } = await res.json();
     
-    // Compute actual cumulative running time (hrs) and fuel cost (₹)
-    let totalRuntimeHrs = 0;
-    let totalCostRs = 0;
+    // Compute Session Running Time (hrs) and Session Fuel Cost (₹)
+    let sessionRuntimeHrs = 0;
     
     const processedRows = (rows || []).map((r, i) => {
-      if (i > 0) {
-        const tPrev = new Date(rows[i-1].ts).getTime();
-        const tCurr = new Date(r.ts).getTime();
-        const dtHours = (tCurr - tPrev) / 3600000;
-        
-        const isRunning = r.is_running || r.genset_state === 'Running' || (r.engine_speed_rpm && r.engine_speed_rpm > 500);
-        if (isRunning && dtHours > 0 && dtHours < 0.25) {
-          totalRuntimeHrs += dtHours;
-          totalCostRs += dtHours * 8.5 * 96.0; // 8.5 LPH * ₹96/L
+      const isRunning = r.is_running || r.genset_state === 'Running' || (r.engine_speed_rpm && r.engine_speed_rpm > 500);
+      
+      if (isRunning) {
+        if (i > 0) {
+          const tPrev = new Date(rows[i-1].ts).getTime();
+          const tCurr = new Date(r.ts).getTime();
+          const dtHours = (tCurr - tPrev) / 3600000;
+          
+          const prevRunning = rows[i-1].is_running || rows[i-1].genset_state === 'Running' || (rows[i-1].engine_speed_rpm && rows[i-1].engine_speed_rpm > 500);
+          
+          if (prevRunning && dtHours > 0 && dtHours < 0.25) {
+            sessionRuntimeHrs += dtHours;
+          } else if (!prevRunning) {
+            sessionRuntimeHrs = (dtHours > 0 && dtHours < 0.25) ? dtHours : 0.02;
+          }
+        } else {
+          sessionRuntimeHrs = 0.02;
         }
+      } else {
+        // Generator is OFF -> Reset session duration to 0!
+        sessionRuntimeHrs = 0;
       }
+
+      const sessionCostRs = sessionRuntimeHrs * 8.5 * 96.0; // 8.5 LPH * ₹96/L
+
       return {
         ts: r.ts,
-        runtime: Number(totalRuntimeHrs.toFixed(2)),
-        cost: Number(totalCostRs.toFixed(2)),
+        runtime: Number(sessionRuntimeHrs.toFixed(2)),
+        cost: Number(sessionCostRs.toFixed(2)),
         kw: r.total_kw || 0,
         fuel: r.fuel_level_pct || 0
       };
@@ -3217,24 +3266,24 @@ async function loadTrend(hours) {
         labels,
         datasets: [
           {
-            label: 'Running Time (hrs)',
+            label: 'Session Duration (hrs)',
             data: ds.map(r => r.runtime),
             borderColor: '#16a34a',
             backgroundColor: greenGrad,
             borderWidth: 2.5,
-            tension: 0.3,
+            tension: 0.1,
             fill: true,
             pointRadius: ds.length > 80 ? 0 : 2,
             pointHoverRadius: 6,
             yAxisID: 'y'
           },
           {
-            label: 'Estimated Fuel Cost (₹)',
+            label: 'Session Fuel Cost (₹)',
             data: ds.map(r => r.cost),
             borderColor: '#dc2626',
             backgroundColor: redGrad,
             borderWidth: 2.5,
-            tension: 0.3,
+            tension: 0.1,
             fill: true,
             pointRadius: ds.length > 80 ? 0 : 2,
             pointHoverRadius: 6,
@@ -3261,9 +3310,11 @@ async function loadTrend(hours) {
               title: items => items[0] ? `⏱ ${items[0].label}` : '',
               label: ctx => {
                 if (ctx.datasetIndex === 0) {
-                  return `  Running Time: ${Number(ctx.raw).toFixed(2)} hrs`;
+                  const hrs = Number(ctx.raw);
+                  const mins = Math.round(hrs * 60);
+                  return `  Session Duration: ${hrs.toFixed(2)} hrs (${mins} mins)`;
                 } else {
-                  return `  Estimated Fuel Cost: ₹ ${Number(ctx.raw).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                  return `  Session Fuel Cost: ₹ ${Number(ctx.raw).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
                 }
               }
             }
@@ -3289,7 +3340,7 @@ async function loadTrend(hours) {
             type: 'linear',
             display: true,
             position: 'left',
-            title: { display: true, text: 'Running Time (hrs)', color: '#2563eb', font: { size: 11, weight: '700' } },
+            title: { display: true, text: 'Session Duration (hrs)', color: '#16a34a', font: { size: 11, weight: '700' } },
             ticks: { color: '#475569', font: { size: 10 }, callback: v => v + ' hrs' },
             grid: { color: '#f1f5f9' },
             min: 0
@@ -3298,7 +3349,7 @@ async function loadTrend(hours) {
             type: 'linear',
             display: true,
             position: 'right',
-            title: { display: true, text: 'Fuel Cost (₹)', color: '#ea580c', font: { size: 11, weight: '700' } },
+            title: { display: true, text: 'Session Cost (₹)', color: '#dc2626', font: { size: 11, weight: '700' } },
             ticks: { color: '#475569', font: { size: 10 }, callback: v => '₹' + v },
             grid: { drawOnChartArea: false },
             min: 0

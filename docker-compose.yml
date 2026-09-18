@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: dg_password
     volumes:
       - dg_postgres_data:/var/lib/postgresql/data
-      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
     ports:
       - "127.0.0.1:5433:5432"    # 5433 to avoid clash with UPS postgres on 5432
     restart: unless-stopped

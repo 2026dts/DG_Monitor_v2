@@ -52,6 +52,8 @@ def init_pool():
                         cur.execute("UPDATE dg_alarms SET cleared_at=NOW() WHERE alarm_type NOT IN ('genset_running', 'genset_stopped', 'low_fuel') AND cleared_at IS NULL")
                         conn.commit()
                         logger.info("[DB] Schema check complete.")
+                    cur.execute("ALTER TABLE dg_alarms ADD COLUMN IF NOT EXISTS read_at TIMESTAMPTZ")
+                    conn.commit()
             finally:
                 _pool.putconn(conn)
         except Exception as e:
@@ -399,6 +401,35 @@ def acknowledge_all_alarms():
         _put(conn)
 
 
+def mark_alarm_read(alarm_id: int):
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE dg_alarms SET read_at=COALESCE(read_at, NOW()) WHERE id=%s",
+                (alarm_id,)
+            )
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        logger.error("[DB] mark_alarm_read failed: %s", exc)
+    finally:
+        _put(conn)
+
+
+def mark_all_alarms_read():
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE dg_alarms SET read_at=COALESCE(read_at, NOW()) WHERE cleared_at IS NULL")
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        logger.error("[DB] mark_all_alarms_read failed: %s", exc)
+    finally:
+        _put(conn)
+
+
 def record_tb_email_confirmation(alarm_type: str | None = None,
                                  recipients: str = "Divakar & Admin",
                                  status: str = "sent",
@@ -479,12 +510,12 @@ def get_open_alarms() -> list[dict]:
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                """SELECT al.id, al.alarm_type, al.severity, al.opened_at,
-                          al.notified_at, al.notify_count, al.extra, a.device_name
+                                """SELECT al.id, al.alarm_type, al.severity, al.opened_at,
+                                                    al.read_at, al.notified_at, al.notify_count, al.extra, a.device_name,
+                                                    (al.read_at IS NOT NULL OR al.extra->>'acknowledged' = 'true') AS is_read
                    FROM dg_alarms al
                    JOIN dg_assets a ON a.id = al.asset_id
                    WHERE al.cleared_at IS NULL
-                     AND (al.extra->>'acknowledged' IS NULL OR al.extra->>'acknowledged' != 'true')
                      AND al.alarm_type IN ('genset_running', 'genset_stopped', 'low_fuel')
                    ORDER BY al.opened_at DESC"""
             )
@@ -510,6 +541,44 @@ def get_open_alarms() -> list[dict]:
             return result
     except Exception as exc:
         logger.error("[DB] get_open_alarms failed: %s", exc)
+        return []
+    finally:
+        _put(conn)
+
+
+def get_recent_alarms(days: int = 7) -> list[dict]:
+    """Return notification history for the dashboard, including cleared alarms."""
+    conn = _conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT al.id, al.alarm_type, al.severity, al.opened_at,
+                          al.cleared_at, al.read_at, al.notified_at, al.notify_count,
+                          al.extra, a.device_name,
+                          (al.read_at IS NOT NULL OR al.extra->>'acknowledged' = 'true') AS is_read
+                   FROM dg_alarms al
+                   JOIN dg_assets a ON a.id = al.asset_id
+                   WHERE al.opened_at >= NOW() - (%s * INTERVAL '1 day')
+                     AND al.alarm_type IN ('genset_running', 'genset_stopped', 'low_fuel')
+                   ORDER BY al.opened_at DESC""",
+                (max(1, int(days)),)
+            )
+            rows = cur.fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                extra = d.get("extra") or {}
+                d["tb_email_sent"] = extra.get("tb_email_sent", True) if isinstance(extra, dict) else True
+                d["tb_email_recipients"] = extra.get("tb_email_recipients", "Divakar & Admin") if isinstance(extra, dict) else "Divakar & Admin"
+                d["tb_email_time"] = extra.get("tb_email_time", datetime.now(timezone.utc).strftime("%I:%M %p")) if isinstance(extra, dict) else datetime.now(timezone.utc).strftime("%I:%M %p")
+                d["tb_email_status"] = extra.get("tb_email_status", "sent") if isinstance(extra, dict) else "sent"
+                for k, v in d.items():
+                    if isinstance(v, datetime):
+                        d[k] = v.isoformat()
+                result.append(d)
+            return result
+    except Exception as exc:
+        logger.error("[DB] get_recent_alarms failed: %s", exc)
         return []
     finally:
         _put(conn)
