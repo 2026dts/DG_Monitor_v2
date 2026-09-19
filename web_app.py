@@ -129,6 +129,32 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <title>Diesel Generator</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
+<script>
+Chart.register({
+  id: 'cssZoomFix',
+  beforeEvent(chart, args) {
+    const event = args.event;
+    if (!event || event.type === 'mouseout' || !event.native) return;
+
+    const nativeEvent = event.native;
+    const pointer = (nativeEvent.touches && nativeEvent.touches[0]) || nativeEvent;
+    if (typeof pointer.clientX !== 'number') return;
+
+    const rect = chart.canvas.getBoundingClientRect();
+    const scaleX = rect.width / chart.width;
+    const scaleY = rect.height / chart.height;
+    if (!isFinite(scaleX) || !isFinite(scaleY) || scaleX <= 0 || scaleY <= 0) return;
+    if (Math.abs(scaleX - 1) < 0.01 && Math.abs(scaleY - 1) < 0.01) return;
+
+    event.x = (pointer.clientX - rect.left) / scaleX;
+    event.y = (pointer.clientY - rect.top) / scaleY;
+    args.inChartArea = chart.isPointInArea(event);
+  }
+});
+
+Chart.defaults.interaction.mode = 'index';
+Chart.defaults.interaction.intersect = false;
+</script>
 <style>
 /* ── Design tokens matching modern dashboard aesthetic ────── */
 :root {
