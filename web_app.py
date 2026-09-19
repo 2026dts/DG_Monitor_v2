@@ -4,7 +4,7 @@ Routes:
   /                       → Main DG dashboard (Radial Gauge, Dynamic Fuel Tank, Control Switch, Top-right Notifications)
   /api/status             → Live register values (JSON)
   /api/history?hours=N    → Time-series for charts (JSON)
-  /api/monthly            → Monthly runtime + cost KPIs (JSON)
+  /api/monthly?range=1m|6m|1y → Runtime + cost KPIs (daily for 1m, monthly for 6m/1y)
   /api/alarms             → Open alarm list (JSON)
   /api/documents          → Document links (JSON)
 """
@@ -38,6 +38,9 @@ def api_history():
 
 @app.route("/api/monthly")
 def api_monthly():
+  rng = (request.args.get("range") or "").lower()
+  if rng in ("1m", "6m", "1y"):
+    return jsonify(db_store.get_kpi_range(rng))
     months = max(1, min(int(request.args.get("months", 12)), 24))
     return jsonify(db_store.get_monthly_kpi(months))
 
@@ -1973,20 +1976,22 @@ body {
   <div class="two-col">
     <div class="chart-card">
       <div class="chart-hdr">
-        <div class="chart-title"><span class="ic-chip c-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>Monthly Runtime Hours</div>
+        <div class="chart-title" id="runtimeKpiTitle"><span class="ic-chip c-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>Monthly Runtime Hours</div>
         <div class="range-btns">
-          <button class="range-btn active" onclick="setActiveRangeBtn(this); loadKpi(6,'runtime')">6 mo</button>
-          <button class="range-btn" onclick="setActiveRangeBtn(this); loadKpi(12,'runtime')">12 mo</button>
+          <button class="range-btn kpi-range-btn" data-range="1m">1M</button>
+          <button class="range-btn kpi-range-btn active" data-range="6m">6M</button>
+          <button class="range-btn kpi-range-btn" data-range="1y">1Y</button>
         </div>
       </div>
       <div class="chart-wrap"><canvas id="runtimeChart"></canvas></div>
     </div>
     <div class="chart-card">
       <div class="chart-hdr">
-        <div class="chart-title"><span class="ic-chip c-orange"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12M6 8h12M6 13l7 8M6 13h3a5 5 0 0 0 0-10"/></svg></span>Monthly Estimated Fuel Cost (₹)</div>
+        <div class="chart-title" id="costKpiTitle"><span class="ic-chip c-orange"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12M6 8h12M6 13l7 8M6 13h3a5 5 0 0 0-10"/></svg></span>Monthly Estimated Fuel Cost (₹)</div>
         <div class="range-btns">
-          <button class="range-btn active" onclick="setActiveRangeBtn(this); loadKpi(6,'cost')">6 mo</button>
-          <button class="range-btn" onclick="setActiveRangeBtn(this); loadKpi(12,'cost')">12 mo</button>
+          <button class="range-btn kpi-range-btn" data-range="1m">1M</button>
+          <button class="range-btn kpi-range-btn active" data-range="6m">6M</button>
+          <button class="range-btn kpi-range-btn" data-range="1y">1Y</button>
         </div>
       </div>
       <div class="chart-wrap"><canvas id="costChart"></canvas></div>
@@ -2284,8 +2289,7 @@ function switchTab(tabId, btn) {
   // Lazy-load analytics charts when switching to that tab
   if (tabId === 'analytics') {
     loadVoltChart(6);
-    loadKpi(6, 'runtime');
-    loadKpi(6, 'cost');
+    loadKpi();
     loadTrend(168);
   }
   if (tabId === 'documents') loadDocs();
@@ -3128,80 +3132,79 @@ async function loadCurrChart(hours) {
   } catch(e) {}
 }
 
-// ── Monthly KPI Charts ─────────────────────────────────────
-let _kpiData = [];
-async function loadKpi(months, type='runtime') {
-  try {
-    if (!_kpiData.length || _kpiData._months !== months) {
-      _kpiData = await (await fetch(`/api/monthly?months=${months}`, { cache: 'no-store' })).json();
-      _kpiData._months = months;
-    }
-    const rows = _kpiData.filter(r => !r._months);
-    const labels = rows.map(r => r.month);
+// ── Monthly / daily KPI charts (1M | 6M | 1Y) ───────────────
+let kpiRange = '6m';
+let kpiRows = [];
 
-    if (type === 'runtime') {
-      destroyChart('runtime');
-      _charts.runtime = new Chart(el('runtimeChart'), {
-        type: 'bar',
-        data: {
-          labels,
-          datasets: [{
-            label: 'Runtime (hrs)',
-            data: rows.map(r => r.runtime_hours || 0),
-            backgroundColor: '#0891b2',
-            borderColor: '#0e7490',
-            borderWidth: 1,
-            borderRadius: 6,
-          }]
-        },
-        options: {
-          ...LIGHT_CHART_OPTS,
-          plugins: {
-            ...LIGHT_CHART_OPTS.plugins,
-            tooltip: {
-              ...LIGHT_CHART_OPTS.plugins.tooltip,
-              callbacks: { label: c => `${Number(c.raw).toFixed(1)} hrs (${rows[c.dataIndex]?.session_count || 0} runs)` }
-            }
-          },
-          scales: {
-            ...LIGHT_CHART_OPTS.scales,
-            y: { ...LIGHT_CHART_OPTS.scales.y, title: { display: true, text: 'Hours', color: '#94a3b8', font: { size: 10 } }, min: 0 }
-          }
-        }
-      });
-    } else {
-      destroyChart('cost');
-      _charts.cost = new Chart(el('costChart'), {
-        type: 'bar',
-        data: {
-          labels,
-          datasets: [{
-            label: 'Estimated Fuel Cost (₹)',
-            data: rows.map(r => r.fuel_cost || 0),
-            backgroundColor: '#ea580c',
-            borderColor: '#c2410c',
-            borderWidth: 1,
-            borderRadius: 6,
-          }]
-        },
-        options: {
-          ...LIGHT_CHART_OPTS,
-          plugins: {
-            ...LIGHT_CHART_OPTS.plugins,
-            tooltip: {
-              ...LIGHT_CHART_OPTS.plugins.tooltip,
-              callbacks: { label: c => `₹ ${Number(c.raw).toLocaleString('en-IN', { maximumFractionDigits: 0 })}` }
-            }
-          },
-          scales: {
-            ...LIGHT_CHART_OPTS.scales,
-            y: { ...LIGHT_CHART_OPTS.scales.y, title: { display: true, text: 'Cost (₹)', color: '#94a3b8', font: { size: 10 } }, min: 0 }
-          }
-        }
-      });
-    }
-  } catch(e) {}
+function updateKpiChart(chart, rows, field, range) {
+  if (!chart) return;
+  chart.data.labels = rows.map(row => row.label);
+  chart.data.datasets[0].data = rows.map(row => row[field] || 0);
+  chart.options.scales.x.ticks = {
+    ...chart.options.scales.x.ticks,
+    autoSkip: true,
+    maxRotation: 0,
+    maxTicksLimit: range === '1m' ? 10 : 12,
+  };
+  chart.update();
 }
+
+function createKpiCharts() {
+  if (!_charts.runtime) {
+    _charts.runtime = new Chart(el('runtimeChart'), {
+      type: 'bar',
+      data: { labels: [], datasets: [{
+        label: 'Runtime (hrs)', data: [], backgroundColor: '#0891b2',
+        borderColor: '#0e7490', borderWidth: 1, borderRadius: 6,
+      }]},
+      options: {
+        ...LIGHT_CHART_OPTS,
+        scales: { ...LIGHT_CHART_OPTS.scales,
+          y: { ...LIGHT_CHART_OPTS.scales.y, title: { display: true, text: 'Hours', color: '#94a3b8', font: { size: 10 } }, min: 0 }
+        }
+      }
+    });
+  }
+  if (!_charts.cost) {
+    _charts.cost = new Chart(el('costChart'), {
+      type: 'bar',
+      data: { labels: [], datasets: [{
+        label: 'Estimated Fuel Cost (₹)', data: [], backgroundColor: '#ea580c',
+        borderColor: '#c2410c', borderWidth: 1, borderRadius: 6,
+      }]},
+      options: {
+        ...LIGHT_CHART_OPTS,
+        scales: { ...LIGHT_CHART_OPTS.scales,
+          y: { ...LIGHT_CHART_OPTS.scales.y, title: { display: true, text: 'Cost (₹)', color: '#94a3b8', font: { size: 10 } }, min: 0 }
+        }
+      }
+    });
+  }
+}
+
+async function loadKpi(range = kpiRange) {
+  kpiRange = range;
+  document.querySelectorAll('.kpi-range-btn').forEach(button => {
+    button.classList.toggle('active', button.dataset.range === kpiRange);
+  });
+  try {
+    createKpiCharts();
+    kpiRows = await (await fetch(`/api/monthly?range=${kpiRange}`, { cache: 'no-store' })).json();
+    updateKpiChart(_charts.runtime, kpiRows, 'runtime_hours', kpiRange);
+    updateKpiChart(_charts.cost, kpiRows, 'fuel_cost', kpiRange);
+    const daily = kpiRange === '1m';
+    const runtimeTitle = el('runtimeKpiTitle');
+    const costTitle = el('costKpiTitle');
+    if (runtimeTitle) runtimeTitle.lastChild.textContent = daily ? 'Daily Runtime Hours' : 'Monthly Runtime Hours';
+    if (costTitle) costTitle.lastChild.textContent = daily ? 'Daily Estimated Fuel Cost (₹)' : 'Monthly Estimated Fuel Cost (₹)';
+  } catch (error) {
+    console.error('KPI load failed', error);
+  }
+}
+
+document.querySelectorAll('.kpi-range-btn').forEach(button => {
+  button.addEventListener('click', () => loadKpi(button.dataset.range));
+});
 
 // ── Running Time & Cost Trend Chart ────────────────────────
 async function loadTrend(hours) {
@@ -3420,8 +3423,7 @@ initPhasePieCharts();
 initLineVoltPie();
 updateStatus();
 loadVoltChart(6);
-loadKpi(6, 'runtime');
-loadKpi(6, 'cost');
+loadKpi('6m');
 loadTrend(168);
 loadDocs();
 

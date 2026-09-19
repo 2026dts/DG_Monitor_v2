@@ -657,6 +657,70 @@ def get_monthly_kpi(months: int = 12) -> list[dict]:
 
 
 # =============================================================
+# KPI RANGE (1M = daily, 6M / 1Y = monthly)
+# =============================================================
+
+_KPI_RANGES = {
+    "1m": ("day", 30),
+    "6m": ("month", 6),
+    "1y": ("month", 12),
+}
+
+
+def get_kpi_range(range_key: str = "6m") -> list[dict]:
+    unit, bucket_count = _KPI_RANGES.get(
+        (range_key or "").lower(), _KPI_RANGES["6m"]
+    )
+    label_format = "%d %b" if unit == "day" else "%b %y"
+    asset_id = get_asset_id("dg1")
+    conn = _conn()
+    sql = f"""
+        WITH buckets AS (
+            SELECT g::date AS bucket
+            FROM generate_series(
+                DATE_TRUNC('{unit}', NOW() AT TIME ZONE %(tz)s)
+                    - (({bucket_count} - 1) * INTERVAL '1 {unit}'),
+                DATE_TRUNC('{unit}', NOW() AT TIME ZONE %(tz)s),
+                INTERVAL '1 {unit}'
+            ) AS g
+        )
+        SELECT b.bucket,
+               COALESCE(SUM(s.duration_hours), 0) AS runtime_hours,
+               COUNT(s.id) AS session_count,
+               COALESCE(SUM(s.fuel_cost), 0) AS fuel_cost,
+               COALESCE(SUM(s.fuel_used_litres), 0) AS fuel_used_litres
+        FROM buckets b
+        LEFT JOIN dg_run_sessions s
+               ON s.asset_id = %(aid)s
+              AND s.ended_at IS NOT NULL
+              AND DATE_TRUNC('{unit}', s.ended_at AT TIME ZONE %(tz)s)::date = b.bucket
+        GROUP BY b.bucket
+        ORDER BY b.bucket
+    """
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, {"tz": config.DASH_TZ, "aid": asset_id})
+            rows = cur.fetchall()
+        return [
+            {
+                "month": row["bucket"].strftime(label_format),
+                "label": row["bucket"].strftime(label_format),
+                "bucket": row["bucket"].isoformat(),
+                "runtime_hours": round(float(row["runtime_hours"]), 2),
+                "session_count": int(row["session_count"]),
+                "fuel_cost": round(float(row["fuel_cost"]), 2),
+                "fuel_used_litres": round(float(row["fuel_used_litres"]), 2),
+            }
+            for row in rows
+        ]
+    except Exception as exc:
+        logger.error("[DB] get_kpi_range failed: %s", exc)
+        return []
+    finally:
+        _put(conn)
+
+
+# =============================================================
 # DOCUMENTS
 # =============================================================
 

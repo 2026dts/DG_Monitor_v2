@@ -43,6 +43,7 @@ DB_DSN = (
 # =============================================================
 FUEL_COST_PER_LITRE   = float(os.environ.get("FUEL_COST_PER_LITRE", "96.0"))   # ₹
 FUEL_CONSUMPTION_LPH  = float(os.environ.get("FUEL_CONSUMPTION_LPH", "8.5"))    # L/hr at full load
+DASH_TZ               = os.environ.get("DASH_TZ", "Asia/Kolkata")
 
 # =============================================================
 # Alarm thresholds (all configurable via env vars)
