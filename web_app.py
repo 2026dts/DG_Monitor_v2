@@ -158,10 +158,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: var(--bg);
+  background: transparent;
   color: var(--text);
   min-height: 100vh;
   line-height: 1.5;
+  zoom: 0.8;
 }
 
 /* ── Header ──────────────────────────────────────────────── */
@@ -461,11 +462,11 @@ body {
 .notif-empty-text { font-size: 13px; font-weight: 600; color: var(--text2); }
 .notif-empty-sub { font-size: 11px; color: var(--text3); margin-top: 2px; }
 
-/* ── Main Centered Container (Max-Width 1200px) ──────────── */
+/* ── Main Full-Width Container ───────────────────────────── */
 .main {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 24px 28px;
+  max-width: none;
+  margin: 0;
+  padding: 18px 16px;
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -1255,7 +1256,7 @@ body {
   display: flex;
   align-items: center;
   gap: 0;
-  padding: 0 28px;
+  padding: 0 12px;
   position: sticky;
   top: 67px;
   z-index: 90;
@@ -1288,7 +1289,7 @@ body {
 }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
-.main { max-width: 1200px; margin: 0 auto; padding: 24px 28px; display: flex; flex-direction: column; gap: 22px; }
+.main { max-width: none; margin: 0; padding: 18px 16px; display: flex; flex-direction: column; gap: 22px; }
 
 /* ── Range Indicator Bar ─────────────────────────────────── */
 .range-bar-wrap {
