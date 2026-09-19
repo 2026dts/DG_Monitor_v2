@@ -1497,7 +1497,7 @@ body {
     Overview
   </button>
   <button class="tab-btn" onclick="switchTab('engine',this)">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.64 5.64l1.42 1.42M16.94 16.94l1.42 1.42M5.64 18.36l1.42-1.42M16.94 7.06l1.42-1.42"/><circle cx="12" cy="12" r="4"/><path d="M8 4.5 9.5 3h5L16 4.5M8 19.5 9.5 21h5l1.5-1.5"/></svg>
     Engine Health
   </button>
   <button class="tab-btn" onclick="switchTab('electrical',this)">
@@ -1777,16 +1777,16 @@ body {
             <path d="M 59.0 59.0 A 58 58 0 0 1 100.0 42.0" fill="none" stroke="#eab308" stroke-width="8" />
             <path d="M 100.0 42.0 A 58 58 0 0 1 141.0 59.0" fill="none" stroke="#f97316" stroke-width="8" />
             <path d="M 141.0 59.0 A 58 58 0 0 1 141.0 141.0" fill="none" stroke="#ef4444" stroke-width="8" stroke-linecap="round" />
-            <text x="41.3" y="161.9" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">-60</text>
-            <text x="19.8" y="124.7" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">-40</text>
-            <text x="19.8" y="81.7" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">-20</text>
-            <text x="41.3" y="44.5" font-size="8" font-weight="800" fill="#15803d" text-anchor="middle">0</text>
-            <text x="78.5" y="23.0" font-size="8" font-weight="600" fill="#b45309" text-anchor="middle">20</text>
-            <text x="121.5" y="23.0" font-size="8" font-weight="600" fill="#b45309" text-anchor="middle">40</text>
-            <text x="158.7" y="44.5" font-size="8" font-weight="800" fill="#c2410c" text-anchor="middle">60</text>
-            <text x="180.2" y="81.7" font-size="8" font-weight="600" fill="#c2410c" text-anchor="middle">80</text>
-            <text x="180.2" y="124.7" font-size="8" font-weight="600" fill="#b91c1c" text-anchor="middle">100</text>
-            <text x="158.7" y="161.9" font-size="8" font-weight="800" fill="#b91c1c" text-anchor="middle">120</text>
+            <text x="41.3" y="161.9" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">0</text>
+            <text x="19.8" y="124.7" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">30</text>
+            <text x="19.8" y="81.7" font-size="8" font-weight="600" fill="#15803d" text-anchor="middle">60</text>
+            <text x="41.3" y="44.5" font-size="8" font-weight="800" fill="#15803d" text-anchor="middle">90</text>
+            <text x="78.5" y="23.0" font-size="8" font-weight="600" fill="#b45309" text-anchor="middle">120</text>
+            <text x="121.5" y="23.0" font-size="8" font-weight="600" fill="#b45309" text-anchor="middle">150</text>
+            <text x="158.7" y="44.5" font-size="8" font-weight="800" fill="#c2410c" text-anchor="middle">180</text>
+            <text x="180.2" y="81.7" font-size="8" font-weight="600" fill="#c2410c" text-anchor="middle">210</text>
+            <text x="180.2" y="124.7" font-size="8" font-weight="600" fill="#b91c1c" text-anchor="middle">225</text>
+            <text x="158.7" y="161.9" font-size="8" font-weight="800" fill="#b91c1c" text-anchor="middle">240</text>
             <text x="100" y="152" font-size="13" font-weight="800" fill="#0f172a" text-anchor="middle">°F</text>
             <g id="tempNeedleGroup" style="transform-origin: 100px 100px; transform: rotate(-135deg); transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);">
               <polygon points="100,34 103,100 97,100" fill="#0f172a" />
@@ -2614,7 +2614,7 @@ async function updateStatus() {
       fuelBadge.style.background = 'var(--green-dim)';
       fuelBadge.style.color = 'var(--green)';
     }
-    el('fuelEstimatedLiters').innerHTML = fuel != null ? `Reserve: <strong>${(fuelPct * 10).toFixed(0)} L</strong>` : '— Litres';
+    el('fuelEstimatedLiters').innerHTML = fuel != null ? `Reserve: <strong>${fuelPct.toFixed(0)} L</strong>` : '— Litres';
     updateRangeMarker('fuelRangeMarker', fuelPct, 0, 100);
 
     // ── 2. DYNAMIC CONTROL SWITCH WIDGET UPDATE ────────────
@@ -2736,9 +2736,9 @@ async function updateStatus() {
     const tempHigh = temp != null && temp > 220;
     if (el('sv-temp-num')) el('sv-temp-num').textContent = `${tempVal.toFixed(1)} °F`;
     
-    // Needle rotation: -60°F (-135deg) to 120°F (+135deg) on dial face
-    const tempClamped = Math.max(-60, Math.min(120, tempVal));
-    const tempDeg = -135 + ((tempClamped + 60) / 180) * 270;
+    // Needle rotation: 0°F (-135deg) to 240°F (+135deg) on dial face
+    const tempClamped = Math.max(0, Math.min(240, tempVal));
+    const tempDeg = -135 + (tempClamped / 240) * 270;
     const tempNeedle = el('tempNeedleGroup');
     if (tempNeedle) {
       tempNeedle.style.transform = `rotate(${tempDeg.toFixed(1)}deg)`;
