@@ -8,10 +8,9 @@ services:
       POSTGRES_USER:     dg_user
       POSTGRES_PASSWORD: dg_password
     volumes:
-      - dg_postgres_data:/var/lib/postgresql/data
+      # Persistent database files stored beside this compose file.
+      - ./data/postgres:/var/lib/postgresql/data
       - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-    ports:
-      - "127.0.0.1:5433:5432"    # 5433 to avoid clash with UPS postgres on 5432
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dg_user -d dg_monitor"]
@@ -78,6 +77,3 @@ services:
       retries: 3
       start_period: 20s
 
-volumes:
-  dg_postgres_data:
-    driver: local

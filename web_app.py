@@ -12,11 +12,13 @@ Routes:
 from datetime import datetime
 import os
 from flask import Flask, jsonify, request, send_from_directory
+from flask_cors import CORS
 import state
 import db_store
 from config import USR_IP, USR_PORT, SLAVE_ID
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 
 # ── API ENDPOINTS ────────────────────────────────────────────
