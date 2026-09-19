@@ -1,8 +1,39 @@
-.venv/
+# PostgreSQL data - NEVER include in Docker build context
+data/
+data/**
+data/18/
+data/18/*
+ 
+# PostgreSQL backups
+*.backup
+*.dump
+ 
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+ 
+# Virtual environments
+venv/
+.venv/
+ 
+# Git
 .git/
 .gitignore
-.vscode/
-*.log
+ 
+# Environment/secrets
 .env
+.env.*
+ 
+# Logs
+*.log
+logs/
+ 
+# IDE
+.vscode/
+.idea/
+ 
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,79 +1,130 @@
+cat docker-compose.yml 
 services:
 
+  # ============================================================
+  # PostgreSQL Database
+  # ============================================================
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18.6-alpine
     container_name: dg-postgres
+
     environment:
-      POSTGRES_DB:       dg_monitor
-      POSTGRES_USER:     dg_user
+      POSTGRES_DB: dg_monitor
+      POSTGRES_USER: dg_user
       POSTGRES_PASSWORD: dg_password
+
     volumes:
-      # Persistent database files stored beside this compose file.
-      - ./data/postgres:/var/lib/postgresql/data
+      # PostgreSQL 18+ recommended mount
+      # Database will be stored under ./data/postgres/18/
+      - ./data:/var/lib/postgresql
+
+      # Initial schema
       - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+
     restart: unless-stopped
+
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dg_user -d dg_monitor"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U dg_user -d dg_monitor"
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
+
+  # ============================================================
+  # DG Monitor Application
+  # ============================================================
   dg-monitor:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+
     container_name: dg-monitor
+
     ports:
       - "5001:5001"
+
     depends_on:
       postgres:
         condition: service_healthy
+
     environment:
+
+      # --------------------------------------------------------
       # Modbus / USR
-      USR_IP:         10.10.10.77
-      USR_PORT:       8899
-      SLAVE_ID:       1
-      POLL_INTERVAL:  2
-      TCP_TIMEOUT:    20
-      DEVICE_NAME:    "DG Status"
+      # --------------------------------------------------------
+      USR_IP: "10.10.10.77"
+      USR_PORT: "8899"
+      SLAVE_ID: "1"
+      POLL_INTERVAL: "2"
+      TCP_TIMEOUT: "20"
+      DEVICE_NAME: "DG Status"
 
-      # Database
-      DB_HOST:        postgres
-      DB_PORT:        5432
-      DB_NAME:        dg_monitor
-      DB_USER:        dg_user
-      DB_PASSWORD:    dg_password
 
-      # Fuel cost KPIs
-      FUEL_COST_PER_LITRE:   "96.0"    # ₹ per litre — update to current price
-      FUEL_CONSUMPTION_LPH:  "8.5"     # litres per hour at rated load
+      # --------------------------------------------------------
+      # PostgreSQL Database
+      # --------------------------------------------------------
+      DB_HOST: "postgres"
+      DB_PORT: "5432"
+      DB_NAME: "dg_monitor"
+      DB_USER: "dg_user"
+      DB_PASSWORD: "dg_password"
 
-      # Alarm thresholds
-      ALARM_FUEL_LOW_PCT:    "20.0"
-      ALARM_FREQ_MIN_HZ:     "47.0"
-      ALARM_FREQ_MAX_HZ:     "53.0"
-      ALARM_BATT_LOW_V:      "11.8"
-      ALARM_COOLANT_HIGH_F:  "220.0"
-      ALARM_OIL_LOW_PSI:     "20.0"
 
-      # ThingsBoard (selective — genset_state + fuel_level only)
-      TB_HOST:         10.10.10.52
-      TB_PORT:         1883
-      TB_ACCESS_TOKEN: yiTdu947lff9A6r755Kt
-      TB_USE_TLS:      "False"
+      # --------------------------------------------------------
+      # Fuel Cost / KPI
+      # --------------------------------------------------------
+      FUEL_COST_PER_LITRE: "96.0"
+      FUEL_CONSUMPTION_LPH: "8.5"
 
-      # SMTP alerts
-      SMTP_HOST:        smtp.yourdomain.com
-      SMTP_PORT:        "587"
-      SMTP_USER:        alerts@yourdomain.com
-      SMTP_PASSWORD:    ""
-      SMTP_USE_TLS:     "true"
-      SMTP_FROM:        "DG Monitor <alerts@yourdomain.com>"
+
+      # --------------------------------------------------------
+      # Alarm Thresholds
+      # --------------------------------------------------------
+      ALARM_FUEL_LOW_PCT: "20.0"
+      ALARM_FREQ_MIN_HZ: "47.0"
+      ALARM_FREQ_MAX_HZ: "53.0"
+      ALARM_BATT_LOW_V: "11.8"
+      ALARM_COOLANT_HIGH_F: "220.0"
+      ALARM_OIL_LOW_PSI: "20.0"
+
+
+      # --------------------------------------------------------
+      # ThingsBoard
+      # --------------------------------------------------------
+      TB_HOST: "10.10.10.52"
+      TB_PORT: "1883"
+      TB_ACCESS_TOKEN: "yiTdu947lff9A6r755Kt"
+      TB_USE_TLS: "False"
+
+
+      # --------------------------------------------------------
+      # SMTP Alerts
+      # --------------------------------------------------------
+      SMTP_HOST: "smtp.yourdomain.com"
+      SMTP_PORT: "587"
+      SMTP_USER: "alerts@yourdomain.com"
+      SMTP_PASSWORD: ""
+      SMTP_USE_TLS: "true"
+      SMTP_FROM: "DG Monitor <alerts@yourdomain.com>"
       ALERT_RECIPIENTS: "engineer@yourdomain.com"
 
     restart: unless-stopped
+
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5001/api/status"]
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:5001/api/status"
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
-
+ 
