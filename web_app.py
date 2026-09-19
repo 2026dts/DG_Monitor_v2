@@ -3276,7 +3276,7 @@ async function loadTrend(hours) {
             borderWidth: 2.5,
             tension: 0.1,
             fill: true,
-            pointRadius: ds.length > 80 ? 0 : 2,
+            pointRadius: 2,
             pointHoverRadius: 6,
             yAxisID: 'y'
           },
@@ -3288,7 +3288,7 @@ async function loadTrend(hours) {
             borderWidth: 2.5,
             tension: 0.1,
             fill: true,
-            pointRadius: ds.length > 80 ? 0 : 2,
+            pointRadius: 2,
             pointHoverRadius: 6,
             yAxisID: 'y2'
           }
@@ -3299,7 +3299,7 @@ async function loadTrend(hours) {
         plugins: {
           ...LIGHT_CHART_OPTS.plugins,
           tooltip: {
-            mode: 'index',
+            mode: 'nearest',
             intersect: false,
             backgroundColor: '#0f172a',
             titleColor: '#f8fafc',
@@ -3334,6 +3334,7 @@ async function loadTrend(hours) {
             }
           }
         },
+        interaction: { mode: 'nearest', intersect: false },
         scales: {
           x: {
             ...LIGHT_CHART_OPTS.scales.x,
